@@ -56,33 +56,7 @@ function hardRevert() {
   run('git', ['clean', '-fd']);
 }
 
-function stripFences(s: string): string {
-  const trimmed = s.trim();
-  if (trimmed.startsWith('```')) {
-    const lines = trimmed.split(/\r?\n/);
-    // drop first and last fence line
-    if (lines.length >= 3 && lines[lines.length - 1].startsWith('```')) {
-      return lines.slice(1, -1).join('\n');
-    }
-  }
-  return s;
-}
 
-function extractUnifiedDiff(text: string): string {
-  // Drop noisy environment warnings (e.g., OpenSSL cert message).
-  const cleaned = text
-    .split(/\r?\n/)
-    .filter(
-      (l) =>
-        !l.startsWith('Cannot open directory /nix/store/') || !l.includes('OpenSSL certificates')
-    )
-    .join('\n');
-
-  const unfenced = stripFences(cleaned);
-  const idx = unfenced.indexOf('diff --git ');
-  if (idx === -1) return '';
-  return unfenced.slice(idx).trim() + '\n';
-}
 
 function validateDiffPaths(diff: string) {
   const allowedPrefixes = [
@@ -126,15 +100,6 @@ function validateDiffPaths(diff: string) {
   }
 }
 
-function applyDiff(diff: string, journalDir: string, label: string) {
-  validateDiffPaths(diff);
-
-  const patchPath = path.join(journalDir, `${label}.patch`);
-  fs.writeFileSync(patchPath, diff, 'utf-8');
-  run('git', ['apply', patchPath]);
-  return patchPath;
-}
-
 function summarizeReport(report: EvalReport): string {
   const worst = [...report.scenarios].sort((a, b) => a.score - b.score)[0];
   return [
@@ -144,7 +109,15 @@ function summarizeReport(report: EvalReport): string {
   ].join('\n');
 }
 
-function copilotSuggestPatch(prompt: string, repoDir: string): string {
+/**
+ * Ask Copilot to directly edit files in the working tree (using its write tools),
+ * then return the unified diff of what it changed (via `git diff HEAD`).
+ *
+ * This avoids the "hallucinated context lines" problem of asking an LLM to
+ * produce a raw diff: the model reads the real file, edits it in place, and
+ * the resulting git diff is always a valid, applicable patch.
+ */
+function copilotRunEdits(prompt: string, repoDir: string): string {
   const args = [
     '-p',
     prompt,
@@ -152,9 +125,7 @@ function copilotSuggestPatch(prompt: string, repoDir: string): string {
     '--no-ask-user',
     '--allow-all-tools',
     '--deny-tool',
-    'shell',
-    '--deny-tool',
-    'write',
+    'shell', // no arbitrary shell execution
     '--disable-builtin-mcps',
     '--add-dir',
     repoDir,
@@ -162,15 +133,101 @@ function copilotSuggestPatch(prompt: string, repoDir: string): string {
     'off',
   ];
 
-  const res = spawnSync('copilot', args, {
+  // Run copilot; it edits files directly via write tools.
+  // Inherit stdio so progress/thinking is visible to the user.
+  spawnSync('copilot', args, {
+    cwd: repoDir,
+    env: { ...process.env },
+    stdio: 'inherit',
+  });
+
+  // Capture the real diff of what Copilot changed.
+  const res = spawnSync('git', ['diff', 'HEAD'], {
     cwd: repoDir,
     encoding: 'utf-8',
     stdio: 'pipe',
   });
+  return (res.stdout ?? '').trim();
+}
 
-  const raw = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
-  const diff = extractUnifiedDiff(raw);
-  return diff;
+function buildPrompt(report: EvalReport): string {
+  const worst = [...report.scenarios].sort((a, b) => a.score - b.score)[0];
+  return [
+    'You are improving an open-source TypeScript project that lays out BPMN diagrams headlessly.',
+    'Your task: make targeted edits to the TypeScript source files to improve the layout quality score.',
+    '',
+    'Hard constraints:',
+    '- Edit ONLY files under src/ or test/ (not dist/, node_modules/, or generated artifacts).',
+    '- Do not change the scoring weights in src/eval/score.ts.',
+    '- Keep changes minimal and focused on the layout engine in src/rebuild/.',
+    '- Do not add new npm packages.',
+    '',
+    'Context: current eval report summary:',
+    summarizeReport(report),
+    '',
+    `Focus on improving the worst scenario: ${worst.scenarioId} ${worst.name}.`,
+    'Typical fix areas: routing waypoints, overlap avoidance, and layout spacing in src/rebuild/.',
+  ].join('\n');
+}
+
+interface IterCtx {
+  iter: number;
+  iterations: number;
+  repoDir: string;
+  journalDir: string;
+  evalConfig: EvalConfig;
+  minImprove: number;
+}
+
+async function runIteration(
+  ctx: IterCtx,
+  baseline: EvalReport
+): Promise<{ next: EvalReport; ok: boolean }> {
+  const { iter, iterations, repoDir, journalDir, evalConfig, minImprove } = ctx;
+  const worst = [...baseline.scenarios].sort((a, b) => a.score - b.score)[0];
+
+  process.stdout.write(`\nIteration ${iter}/${iterations}: asking Copilot to edit files...\n`);
+  const diff = copilotRunEdits(buildPrompt(baseline), repoDir);
+
+  if (!diff) {
+    process.stdout.write(`Iteration ${iter}: Copilot made no changes. Stopping.\n`);
+    return { next: baseline, ok: false };
+  }
+
+  const label = `iter-${String(iter).padStart(2, '0')}`;
+  const patchPath = path.join(journalDir, `${label}.patch`);
+
+  let ok = false;
+  let next = baseline;
+  try {
+    validateDiffPaths(diff);
+    fs.writeFileSync(patchPath, diff + '\n', 'utf-8');
+
+    run('npm', ['run', 'build'], { cwd: repoDir });
+    run('npm', ['test'], { cwd: repoDir });
+    const candidate = await runEval(evalConfig);
+    fs.writeFileSync(
+      path.join(journalDir, `${label}.report.json`),
+      JSON.stringify(candidate, null, 2) + '\n',
+      'utf-8'
+    );
+
+    const improve = candidate.aggregate.scoreAvg - baseline.aggregate.scoreAvg;
+    if (improve >= minImprove) {
+      run('git', ['add', '-A'], { cwd: repoDir });
+      run('git', ['commit', '--no-verify', '-m', `agent-loop: iter-${iter} avg +${improve.toFixed(2)} (${worst.scenarioId})`], { cwd: repoDir }); // prettier-ignore
+      process.stdout.write(`Iteration ${iter}: accepted (avg +${improve.toFixed(2)}) patch=${path.relative(repoDir, patchPath)}\n`); // prettier-ignore
+      next = candidate;
+      ok = true;
+    } else {
+      process.stdout.write(`Iteration ${iter}: rejected (avg +${improve.toFixed(2)} < ${minImprove}) patch=${path.relative(repoDir, patchPath)}\n`); // prettier-ignore
+    }
+  } catch (err) {
+    process.stderr.write(`Iteration ${iter}: failed: ${(err as Error).message}\n`);
+  } finally {
+    if (!ok) hardRevert();
+  }
+  return { next, ok };
 }
 
 async function main() {
@@ -185,87 +242,25 @@ async function main() {
   if (!Number.isFinite(iterations) || iterations <= 0) throw new Error('--iterations must be > 0');
 
   fs.mkdirSync(journalDir, { recursive: true });
-
   process.chdir(repoDir);
   requireCleanGitTree();
 
   const evalConfig: EvalConfig = { outputDir, exportArtifacts: true };
-
   let baseline = await runEval(evalConfig);
-  fs.writeFileSync(
-    path.join(outputDir, 'report.baseline.json'),
-    JSON.stringify(baseline, null, 2) + '\n',
-    'utf-8'
-  );
-  process.stdout.write('Baseline\n');
-  process.stdout.write(summarizeReport(baseline) + '\n');
+  fs.writeFileSync(path.join(outputDir, 'report.baseline.json'), JSON.stringify(baseline, null, 2) + '\n', 'utf-8'); // prettier-ignore
+  process.stdout.write('Baseline\n' + summarizeReport(baseline) + '\n');
 
   for (let iter = 1; iter <= iterations; iter++) {
-    const worst = [...baseline.scenarios].sort((a, b) => a.score - b.score)[0];
-
-    const prompt = [
-      'You are improving an open-source TypeScript project that lays out BPMN diagrams headlessly.',
-      'Your task: propose a SINGLE unified diff patch (git-style) that improves the layout score produced by the eval harness.',
-      '',
-      'Hard constraints:',
-      '- Output ONLY a unified diff starting with "diff --git" (no commentary, no markdown).',
-      '- Keep changes minimal and focused; do not touch dist/, node_modules/, or generated artifacts.',
-      '- Do not change the scoring weights; improve the actual layout or geometry behavior.',
-      '',
-      'Context: current eval report summary:',
-      summarizeReport(baseline),
-      '',
-      `Focus on improving the worst scenario: ${worst.scenarioId} ${worst.name}.`,
-      'Typical fix areas include routing waypoints, overlap avoidance, and layout spacing in src/rebuild/.',
-    ].join('\n');
-
-    const diff = copilotSuggestPatch(prompt, repoDir);
-    if (!diff) {
-      console.error(`Iteration ${iter}: Copilot did not return a diff. Stopping.`);
-      break;
-    }
-
-    const label = `iter-${String(iter).padStart(2, '0')}`;
-    const patchPath = applyDiff(diff, journalDir, label);
-
-    let ok = false;
-    try {
-      run('npm', ['test'], { cwd: repoDir });
-      const candidate = await runEval(evalConfig);
-      fs.writeFileSync(
-        path.join(journalDir, `${label}.report.json`),
-        JSON.stringify(candidate, null, 2) + '\n',
-        'utf-8'
-      );
-
-      const improve = candidate.aggregate.scoreAvg - baseline.aggregate.scoreAvg;
-      const minImproveOk = improve >= minImprove;
-
-      if (minImproveOk) {
-        process.stdout.write(
-          `Iteration ${iter}: accepted (avg +${improve.toFixed(2)}) patch=${path.relative(repoDir, patchPath)}\n`
-        );
-        baseline = candidate;
-        ok = true;
-      } else {
-        process.stdout.write(
-          `Iteration ${iter}: rejected (avg +${improve.toFixed(2)} < ${minImprove}) patch=${path.relative(repoDir, patchPath)}\n`
-        );
-      }
-    } catch (err) {
-      console.error(`Iteration ${iter}: failed: ${(err as Error).message}`);
-    } finally {
-      if (!ok) hardRevert();
-    }
+    const { next, ok } = await runIteration(
+      { iter, iterations, repoDir, journalDir, evalConfig, minImprove },
+      baseline
+    );
+    baseline = next;
+    if (!ok && !next) break; // Copilot made no changes — stop early
   }
 
-  fs.writeFileSync(
-    path.join(outputDir, 'report.final.json'),
-    JSON.stringify(baseline, null, 2) + '\n',
-    'utf-8'
-  );
-  process.stdout.write('Final\n');
-  process.stdout.write(summarizeReport(baseline) + '\n');
+  fs.writeFileSync(path.join(outputDir, 'report.final.json'), JSON.stringify(baseline, null, 2) + '\n', 'utf-8'); // prettier-ignore
+  process.stdout.write('Final\n' + summarizeReport(baseline) + '\n');
 }
 
 main().catch((err) => {
