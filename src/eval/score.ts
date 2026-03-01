@@ -69,13 +69,20 @@ function computeOverlapAndNearMisses(shapes: ListedElement[]): {
 
   for (let i = 0; i < shapes.length; i++) {
     const a = shapes[i];
-    if (a.x === undefined || a.y === undefined || a.width === undefined || a.height === undefined)
+    if (a.x === undefined || a.y === undefined || a.width === undefined || a.height === undefined) {
       continue;
+    }
     const ra = { x: a.x, y: a.y, width: a.width, height: a.height };
     for (let j = i + 1; j < shapes.length; j++) {
       const b = shapes[j];
-      if (b.x === undefined || b.y === undefined || b.width === undefined || b.height === undefined)
+      if (
+        b.x === undefined ||
+        b.y === undefined ||
+        b.width === undefined ||
+        b.height === undefined
+      ) {
         continue;
+      }
       const rb = { x: b.x, y: b.y, width: b.width, height: b.height };
       if (rectsOverlap(ra, rb)) overlaps++;
       else if (rectsNearby(ra, rb, 15)) nearMisses++;
