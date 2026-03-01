@@ -4,6 +4,19 @@ import { spawnSync } from 'node:child_process';
 
 import { runEval } from './eval/run-eval';
 import type { EvalConfig, EvalReport } from './eval/types';
+import type { AuditLog, IterationAudit } from './agent-loop-types';
+import { generateMarkdownReport } from './agent-loop-report';
+import {
+  captureScenarioSvgs,
+  copilotRunEdits,
+  parseSessionTranscript,
+  validateDiffPaths,
+  writeMcpConfig,
+} from './agent-loop-helpers';
+
+// ---------------------------------------------------------------------------
+// CLI arg parser
+// ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -21,6 +34,10 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Shell helpers
+// ---------------------------------------------------------------------------
 
 function run(cmd: string, args: string[], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) {
   const res = spawnSync(cmd, args, {
@@ -40,8 +57,19 @@ function run(cmd: string, args: string[], opts?: { cwd?: string; env?: NodeJS.Pr
   return { stdout: res.stdout as string, stderr: res.stderr as string };
 }
 
+function tryRun(cmd: string, args: string[], opts?: { cwd?: string }): string {
+  try {
+    return run(cmd, args, opts).stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+function getCurrentGitCommit(repoDir: string): string {
+  return tryRun('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoDir });
+}
+
 function requireCleanGitTree() {
-  // Only consider tracked diffs. Untracked files (e.g. test outputs) are fine.
   const trackedDirty =
     spawnSync('git', ['diff', '--quiet'], { encoding: 'utf-8', stdio: 'ignore' }).status !== 0 ||
     spawnSync('git', ['diff', '--cached', '--quiet'], { encoding: 'utf-8', stdio: 'ignore' })
@@ -51,54 +79,14 @@ function requireCleanGitTree() {
   }
 }
 
-function hardRevert() {
-  run('git', ['reset', '--hard', 'HEAD']);
-  run('git', ['clean', '-fd']);
+function hardRevert(repoDir: string) {
+  run('git', ['reset', '--hard', 'HEAD'], { cwd: repoDir });
+  run('git', ['clean', '-fd'], { cwd: repoDir });
 }
 
-
-
-function validateDiffPaths(diff: string) {
-  const allowedPrefixes = [
-    'src/',
-    'test/',
-    'docs/',
-    'README.md',
-    'TODO.md',
-    'Makefile',
-    'package.json',
-    'esbuild.config.mjs',
-    'tsconfig.json',
-    'tsconfig.test.json',
-    'vitest.config.ts',
-    'eslint.config.mjs',
-  ];
-
-  const forbiddenPrefixes = ['dist/', 'node_modules/', '.git/'];
-
-  const fileLines = diff
-    .split(/\r?\n/)
-    .filter((l) => l.startsWith('+++ b/') || l.startsWith('--- a/'));
-
-  const paths = new Set<string>();
-  for (const l of fileLines) {
-    const p = l
-      .replace(/^\+\+\+ b\//, '')
-      .replace(/^--- a\//, '')
-      .trim();
-    if (p === '/dev/null') continue;
-    paths.add(p);
-  }
-
-  for (const p of paths) {
-    if (forbiddenPrefixes.some((fx) => p.startsWith(fx))) {
-      throw new Error(`Diff touches forbidden path: ${p}`);
-    }
-    if (!allowedPrefixes.some((fx) => p === fx || p.startsWith(fx))) {
-      throw new Error(`Diff touches disallowed path: ${p}`);
-    }
-  }
-}
+// ---------------------------------------------------------------------------
+// Eval helpers
+// ---------------------------------------------------------------------------
 
 function summarizeReport(report: EvalReport): string {
   const worst = [...report.scenarios].sort((a, b) => a.score - b.score)[0];
@@ -109,52 +97,17 @@ function summarizeReport(report: EvalReport): string {
   ].join('\n');
 }
 
-/**
- * Ask Copilot to directly edit files in the working tree (using its write tools),
- * then return the unified diff of what it changed (via `git diff HEAD`).
- *
- * This avoids the "hallucinated context lines" problem of asking an LLM to
- * produce a raw diff: the model reads the real file, edits it in place, and
- * the resulting git diff is always a valid, applicable patch.
- */
-function copilotRunEdits(prompt: string, repoDir: string): string {
-  const args = [
-    '-p',
-    prompt,
-    '-s',
-    '--no-ask-user',
-    '--allow-all-tools',
-    '--deny-tool',
-    'shell', // no arbitrary shell execution
-    '--disable-builtin-mcps',
-    '--add-dir',
-    repoDir,
-    '--stream',
-    'off',
-  ];
-
-  // Run copilot; it edits files directly via write tools.
-  // Inherit stdio so progress/thinking is visible to the user.
-  spawnSync('copilot', args, {
-    cwd: repoDir,
-    env: { ...process.env },
-    stdio: 'inherit',
-  });
-
-  // Capture the real diff of what Copilot changed.
-  const res = spawnSync('git', ['diff', 'HEAD'], {
-    cwd: repoDir,
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
-  return (res.stdout ?? '').trim();
-}
-
-function buildPrompt(report: EvalReport): string {
+function buildPrompt(report: EvalReport, outputDir: string): string {
   const worst = [...report.scenarios].sort((a, b) => a.score - b.score)[0];
   return [
     'You are improving an open-source TypeScript project that lays out BPMN diagrams headlessly.',
     'Your task: make targeted edits to the TypeScript source files to improve the layout quality score.',
+    '',
+    'You have access to BPMN MCP tools (bpmn-js-mcp server). Use them to:',
+    '  1. Import any generated BPMN file with import_bpmn_xml (filePath parameter)',
+    '  2. Run layout_bpmn_diagram to test layout changes',
+    '  3. Export the result with export_bpmn (format: svg) to visually inspect quality',
+    '  4. Then translate your observations into TypeScript fixes in src/rebuild/',
     '',
     'Hard constraints:',
     '- Edit ONLY files under src/ or test/ (not dist/, node_modules/, or generated artifacts).',
@@ -166,9 +119,14 @@ function buildPrompt(report: EvalReport): string {
     summarizeReport(report),
     '',
     `Focus on improving the worst scenario: ${worst.scenarioId} ${worst.name}.`,
+    `You can find its BPMN artifact in: ${outputDir}`,
     'Typical fix areas: routing waypoints, overlap avoidance, and layout spacing in src/rebuild/.',
   ].join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Iteration runner
+// ---------------------------------------------------------------------------
 
 interface IterCtx {
   iter: number;
@@ -177,58 +135,129 @@ interface IterCtx {
   journalDir: string;
   evalConfig: EvalConfig;
   minImprove: number;
+  mcpConfigPath: string;
+  model?: string;
 }
 
-async function runIteration(
+async function evalCandidate(
+  iterAudit: IterationAudit,
+  diff: string,
+  patchPath: string,
+  iterDir: string,
   ctx: IterCtx,
   baseline: EvalReport
 ): Promise<{ next: EvalReport; ok: boolean }> {
-  const { iter, iterations, repoDir, journalDir, evalConfig, minImprove } = ctx;
+  const { iter, repoDir, evalConfig, minImprove } = ctx;
   const worst = [...baseline.scenarios].sort((a, b) => a.score - b.score)[0];
-
-  process.stdout.write(`\nIteration ${iter}/${iterations}: asking Copilot to edit files...\n`);
-  const diff = copilotRunEdits(buildPrompt(baseline), repoDir);
-
-  if (!diff) {
-    process.stdout.write(`Iteration ${iter}: Copilot made no changes. Stopping.\n`);
-    return { next: baseline, ok: false };
-  }
-
-  const label = `iter-${String(iter).padStart(2, '0')}`;
-  const patchPath = path.join(journalDir, `${label}.patch`);
+  iterAudit.changedFiles = diff
+    .split('\n')
+    .filter((l) => l.startsWith('+++ b/'))
+    .map((l) => l.replace('+++ b/', '').trim());
 
   let ok = false;
   let next = baseline;
   try {
     validateDiffPaths(diff);
     fs.writeFileSync(patchPath, diff + '\n', 'utf-8');
-
     run('npm', ['run', 'build'], { cwd: repoDir });
     run('npm', ['test'], { cwd: repoDir });
     const candidate = await runEval(evalConfig);
-    fs.writeFileSync(
-      path.join(journalDir, `${label}.report.json`),
-      JSON.stringify(candidate, null, 2) + '\n',
-      'utf-8'
-    );
+    fs.writeFileSync(path.join(iterDir, 'report.json'), JSON.stringify(candidate, null, 2) + '\n', 'utf-8'); // prettier-ignore
+    iterAudit.candidateReport = candidate;
+    iterAudit.svgSnapshots.after = captureScenarioSvgs(candidate.scenarios, path.join(iterDir, 'svgs-after'), 'after'); // prettier-ignore
 
     const improve = candidate.aggregate.scoreAvg - baseline.aggregate.scoreAvg;
+    iterAudit.scoreImprovement = improve;
     if (improve >= minImprove) {
       run('git', ['add', '-A'], { cwd: repoDir });
       run('git', ['commit', '--no-verify', '-m', `agent-loop: iter-${iter} avg +${improve.toFixed(2)} (${worst.scenarioId})`], { cwd: repoDir }); // prettier-ignore
       process.stdout.write(`Iteration ${iter}: accepted (avg +${improve.toFixed(2)}) patch=${path.relative(repoDir, patchPath)}\n`); // prettier-ignore
       next = candidate;
       ok = true;
+      iterAudit.accepted = true;
     } else {
-      process.stdout.write(`Iteration ${iter}: rejected (avg +${improve.toFixed(2)} < ${minImprove}) patch=${path.relative(repoDir, patchPath)}\n`); // prettier-ignore
+      iterAudit.rejectionReason = `score improvement ${improve.toFixed(3)} < threshold ${minImprove}`;
+      process.stdout.write(`Iteration ${iter}: rejected (avg +${improve.toFixed(2)} < ${minImprove})\n`); // prettier-ignore
     }
   } catch (err) {
-    process.stderr.write(`Iteration ${iter}: failed: ${(err as Error).message}\n`);
+    const msg = (err as Error).message;
+    process.stderr.write(`Iteration ${iter}: failed: ${msg}\n`);
+    iterAudit.rejectionReason = `error: ${msg}`;
   } finally {
-    if (!ok) hardRevert();
+    if (!ok) hardRevert(repoDir);
   }
   return { next, ok };
 }
+
+async function runIteration(
+  ctx: IterCtx,
+  baseline: EvalReport
+): Promise<{ next: EvalReport; ok: boolean; audit: IterationAudit }> {
+  const { iter, iterations, repoDir, journalDir, evalConfig, mcpConfigPath, model } = ctx;
+  const label = `iter-${String(iter).padStart(2, '0')}`;
+  const iterDir = path.join(journalDir, label);
+  fs.mkdirSync(iterDir, { recursive: true });
+
+  const startedAt = new Date().toISOString();
+  const baselineSvgDir = path.join(iterDir, 'svgs-baseline');
+  const transcriptPath = path.join(iterDir, 'session.md');
+  const patchPath = path.join(iterDir, 'changes.patch');
+
+  const iterAudit: IterationAudit = {
+    iter,
+    startedAt,
+    finishedAt: '',
+    durationSec: 0,
+    model: model ?? '(default)',
+    tokenUsage: {},
+    svgSnapshots: {
+      baseline: captureScenarioSvgs(baseline.scenarios, baselineSvgDir, 'baseline'),
+      after: [],
+    },
+    sessionTranscriptPath: transcriptPath,
+    toolCalls: [],
+    patchPath,
+    changedFiles: [],
+    scoreImprovement: 0,
+    accepted: false,
+    rejectionReason: '',
+    baselineReport: baseline,
+    candidateReport: null,
+  };
+
+  process.stdout.write(`\nIteration ${iter}/${iterations}: asking Copilot to edit files...\n`);
+  const diff = copilotRunEdits({
+    prompt: buildPrompt(baseline, evalConfig.outputDir),
+    repoDir,
+    mcpConfigPath,
+    transcriptPath,
+    model,
+  });
+
+  const parsed = parseSessionTranscript(transcriptPath);
+  iterAudit.model = parsed.model !== 'unknown' ? parsed.model : (model ?? '(default)');
+  iterAudit.tokenUsage = parsed.tokenUsage;
+  iterAudit.toolCalls = parsed.toolCalls;
+
+  let result: { next: EvalReport; ok: boolean };
+  if (!diff) {
+    process.stdout.write(`Iteration ${iter}: Copilot made no changes. Stopping.\n`);
+    iterAudit.rejectionReason = 'no changes made';
+    result = { next: baseline, ok: false };
+  } else {
+    result = await evalCandidate(iterAudit, diff, patchPath, iterDir, ctx, baseline);
+  }
+
+  iterAudit.finishedAt = new Date().toISOString();
+  iterAudit.durationSec = (Date.now() - new Date(startedAt).getTime()) / 1000;
+  fs.writeFileSync(path.join(iterDir, 'audit.json'), JSON.stringify(iterAudit, null, 2) + '\n', 'utf-8'); // prettier-ignore
+
+  return { ...result, audit: iterAudit };
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -238,6 +267,7 @@ async function main() {
   const journalDir = path.join(outputDir, 'agent-loop');
   const iterations = args.iterations ? Number(args.iterations) : 3;
   const minImprove = args.minImprove ? Number(args.minImprove) : 0.1;
+  const model = typeof args.model === 'string' ? args.model : undefined;
 
   if (!Number.isFinite(iterations) || iterations <= 0) throw new Error('--iterations must be > 0');
 
@@ -245,22 +275,73 @@ async function main() {
   process.chdir(repoDir);
   requireCleanGitTree();
 
-  const evalConfig: EvalConfig = { outputDir, exportArtifacts: true };
-  let baseline = await runEval(evalConfig);
-  fs.writeFileSync(path.join(outputDir, 'report.baseline.json'), JSON.stringify(baseline, null, 2) + '\n', 'utf-8'); // prettier-ignore
-  process.stdout.write('Baseline\n' + summarizeReport(baseline) + '\n');
+  const startedAt = new Date().toISOString();
+  const gitCommit = getCurrentGitCommit(repoDir);
+  const mcpConfigPath = writeMcpConfig(repoDir);
 
-  for (let iter = 1; iter <= iterations; iter++) {
-    const { next, ok } = await runIteration(
-      { iter, iterations, repoDir, journalDir, evalConfig, minImprove },
-      baseline
+  try {
+    const evalConfig: EvalConfig = { outputDir, exportArtifacts: true };
+    let baseline = await runEval(evalConfig);
+    fs.writeFileSync(path.join(outputDir, 'report.baseline.json'), JSON.stringify(baseline, null, 2) + '\n', 'utf-8'); // prettier-ignore
+    process.stdout.write('Baseline\n' + summarizeReport(baseline) + '\n');
+
+    // Save baseline SVGs to iter-00 for report
+    const iter00SvgDir = path.join(journalDir, 'iter-00', 'svgs-baseline');
+    captureScenarioSvgs(baseline.scenarios, iter00SvgDir, 'baseline');
+
+    const auditIterations: IterationAudit[] = [];
+
+    for (let iter = 1; iter <= iterations; iter++) {
+      const { next, ok, audit } = await runIteration(
+        { iter, iterations, repoDir, journalDir, evalConfig, minImprove, mcpConfigPath, model },
+        baseline
+      );
+      auditIterations.push(audit);
+      baseline = next;
+      if (!ok && !next) break;
+    }
+
+    // Final eval & SVGs
+    const finalReport = await runEval(evalConfig);
+    fs.writeFileSync(path.join(outputDir, 'report.final.json'), JSON.stringify(finalReport, null, 2) + '\n', 'utf-8'); // prettier-ignore
+    process.stdout.write('Final\n' + summarizeReport(finalReport) + '\n');
+
+    const finalSvgDir = path.join(journalDir, 'final-svgs');
+    captureScenarioSvgs(finalReport.scenarios, finalSvgDir, 'after');
+
+    // Write full audit JSON
+    const finishedAt = new Date().toISOString();
+    const fullAudit: AuditLog = {
+      startedAt,
+      finishedAt,
+      repoDir,
+      gitCommit,
+      iterations: auditIterations,
+      baselineReport: JSON.parse(
+        fs.readFileSync(path.join(outputDir, 'report.baseline.json'), 'utf-8')
+      ),
+      finalReport,
+    };
+
+    fs.writeFileSync(
+      path.join(journalDir, 'audit.json'),
+      JSON.stringify(fullAudit, null, 2) + '\n',
+      'utf-8'
     );
-    baseline = next;
-    if (!ok && !next) break; // Copilot made no changes — stop early
-  }
 
-  fs.writeFileSync(path.join(outputDir, 'report.final.json'), JSON.stringify(baseline, null, 2) + '\n', 'utf-8'); // prettier-ignore
-  process.stdout.write('Final\n' + summarizeReport(baseline) + '\n');
+    // Generate markdown report
+    const mdReport = generateMarkdownReport(fullAudit, journalDir);
+    const mdPath = path.join(outputDir, 'agent-loop-audit.md');
+    fs.writeFileSync(mdPath, mdReport, 'utf-8');
+    process.stdout.write(`\nAudit report: ${path.relative(repoDir, mdPath)}\n`);
+  } finally {
+    // Clean up temp MCP config
+    try {
+      fs.unlinkSync(mcpConfigPath);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 main().catch((err) => {
