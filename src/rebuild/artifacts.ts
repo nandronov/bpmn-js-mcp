@@ -5,7 +5,7 @@
  * - Text annotations: positioned above-right of their associated element
  * - Data objects/stores: positioned below-right of their associated element
  * - Association / data-association layout after repositioning
- * - Flow labels: centered on connection midpoints
+ * - Flow labels: placed at first-segment midpoint, offset to the non-crossing side
  * - Element labels: placed at bpmn-js default positions (below element center)
  */
 
@@ -180,13 +180,34 @@ export function adjustLabels(registry: ElementRegistry, modeling: Modeling): num
 
 // ── Flow label centering ───────────────────────────────────────────────────
 
+/** Gap (px) between connection segment and the nearest edge of the label box. */
+const FLOW_LABEL_SIDE_OFFSET = 5;
+
 /**
- * Center labeled flow (sequence/message flow) labels on the connection
- * midpoint.  After layout recomputes waypoints, labels may be stranded
- * from their connection's current geometry.
+ * Position labeled flow labels at the midpoint of their first segment,
+ * offset perpendicular to the side with fewer shape overlaps.
+ *
+ * - Horizontal first segment → above (preferred) or below.
+ * - Vertical first segment   → right (preferred) or left.
+ *
+ * This matches bpmn-js interactive placement: the label hugs the first
+ * bend of the connection rather than floating at the path midpoint.
  */
 function centerFlowLabels(registry: ElementRegistry, modeling: Modeling): number {
   const allElements: BpmnElement[] = registry.getAll();
+
+  // Non-container, non-flow shapes used when scoring candidate sides.
+  const shapes = allElements.filter(
+    (el) =>
+      el.type !== 'label' &&
+      !el.type.includes('Flow') &&
+      !el.type.includes('Association') &&
+      el.type !== 'bpmn:Participant' &&
+      el.type !== 'bpmn:Lane' &&
+      el.x !== undefined &&
+      el.width !== undefined
+  );
+
   let count = 0;
 
   for (const flow of allElements) {
@@ -194,15 +215,13 @@ function centerFlowLabels(registry: ElementRegistry, modeling: Modeling): number
     if (!flow.label || !flow.businessObject?.name) continue;
     if (!flow.waypoints || flow.waypoints.length < 2) continue;
 
-    const midpoint = computePathMidpoint(flow.waypoints);
     const labelW = flow.label.width || DEFAULT_LABEL_SIZE.width;
     const labelH = flow.label.height || DEFAULT_LABEL_SIZE.height;
 
-    const targetX = Math.round(midpoint.x - labelW / 2);
-    const targetY = Math.round(midpoint.y - labelH / 2);
+    const target = flowLabelPos(flow.waypoints, labelW, labelH, shapes);
 
-    const dx = targetX - flow.label.x;
-    const dy = targetY - flow.label.y;
+    const dx = target.x - flow.label.x;
+    const dy = target.y - flow.label.y;
 
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
       modeling.moveShape(flow.label as unknown as BpmnElement, { x: dx, y: dy });
@@ -211,6 +230,57 @@ function centerFlowLabels(registry: ElementRegistry, modeling: Modeling): number
   }
 
   return count;
+}
+
+/**
+ * Compute the bpmn-js-style label position for a flow connection.
+ *
+ * Takes the midpoint of the first segment (waypoints[0] → waypoints[1]),
+ * then places the label on the perpendicular side with fewer shape overlaps.
+ */
+function flowLabelPos(
+  waypoints: Array<{ x: number; y: number }>,
+  labelW: number,
+  labelH: number,
+  shapes: BpmnElement[]
+): { x: number; y: number } {
+  const p0 = waypoints[0];
+  const p1 = waypoints[1];
+
+  const midX = (p0.x + p1.x) / 2;
+  const midY = (p0.y + p1.y) / 2;
+  const isHoriz = Math.abs(p1.x - p0.x) >= Math.abs(p1.y - p0.y);
+
+  // Two perpendicular candidates — candidateA is the preferred default side.
+  const candidateA = isHoriz
+    ? { x: Math.round(midX - labelW / 2), y: Math.round(midY - FLOW_LABEL_SIDE_OFFSET - labelH) } // above
+    : { x: Math.round(midX + FLOW_LABEL_SIDE_OFFSET), y: Math.round(midY - labelH / 2) };          // right
+  const candidateB = isHoriz
+    ? { x: Math.round(midX - labelW / 2), y: Math.round(midY + FLOW_LABEL_SIDE_OFFSET) }           // below
+    : { x: Math.round(midX - FLOW_LABEL_SIDE_OFFSET - labelW), y: Math.round(midY - labelH / 2) }; // left
+
+  return labelSideScore(candidateA, labelW, labelH, shapes) <=
+    labelSideScore(candidateB, labelW, labelH, shapes)
+    ? candidateA
+    : candidateB;
+}
+
+/** Count shape overlaps for a label candidate rect (lower score = better). */
+function labelSideScore(
+  pos: { x: number; y: number },
+  w: number,
+  h: number,
+  shapes: BpmnElement[]
+): number {
+  const x2 = pos.x + w;
+  const y2 = pos.y + h;
+  let score = 0;
+  for (const s of shapes) {
+    if (s.x === undefined || s.y === undefined || s.width === undefined || s.height === undefined)
+      continue;
+    if (pos.x < s.x + s.width && x2 > s.x && pos.y < s.y + s.height && y2 > s.y) score++;
+  }
+  return score;
 }
 
 // ── Element label adjustment ───────────────────────────────────────────────
@@ -262,51 +332,4 @@ function adjustElementLabels(registry: ElementRegistry, modeling: Modeling): num
   return count;
 }
 
-// ── Path midpoint computation ──────────────────────────────────────────────
 
-/**
- * Compute the midpoint of a polyline path for label placement.
- * Walks 50% of the total path length to find the exact midpoint.
- */
-function computePathMidpoint(waypoints: Array<{ x: number; y: number }>): {
-  x: number;
-  y: number;
-} {
-  if (waypoints.length === 2) {
-    return {
-      x: (waypoints[0].x + waypoints[1].x) / 2,
-      y: (waypoints[0].y + waypoints[1].y) / 2,
-    };
-  }
-
-  let totalLength = 0;
-  for (let i = 1; i < waypoints.length; i++) {
-    const dx = waypoints[i].x - waypoints[i - 1].x;
-    const dy = waypoints[i].y - waypoints[i - 1].y;
-    totalLength += Math.sqrt(dx * dx + dy * dy);
-  }
-
-  const halfLength = totalLength / 2;
-  let walked = 0;
-
-  for (let i = 1; i < waypoints.length; i++) {
-    const dx = waypoints[i].x - waypoints[i - 1].x;
-    const dy = waypoints[i].y - waypoints[i - 1].y;
-    const segLen = Math.sqrt(dx * dx + dy * dy);
-
-    if (walked + segLen >= halfLength && segLen > 0) {
-      const t = (halfLength - walked) / segLen;
-      return {
-        x: waypoints[i - 1].x + dx * t,
-        y: waypoints[i - 1].y + dy * t,
-      };
-    }
-    walked += segLen;
-  }
-
-  // Fallback: geometric midpoint of first and last
-  return {
-    x: (waypoints[0].x + waypoints[waypoints.length - 1].x) / 2,
-    y: (waypoints[0].y + waypoints[waypoints.length - 1].y) / 2,
-  };
-}

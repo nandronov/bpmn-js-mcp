@@ -5,8 +5,8 @@
  * Uses the same formula as bpmn-js `getExternalLabelMid()`:
  * - Events / Gateways / Data objects: label centre below the element
  *   at (element.centerX, element.bottom + DEFAULT_LABEL_SIZE.height / 2)
- * - Flows: label at the connection midpoint (placed by bpmn-js after
- *   `modeling.layoutConnection()`)
+ * - Flows: label at the midpoint of the first segment, offset perpendicular
+ *   to the side (top/bottom/left/right) with fewer shape crossings
  *
  * Boundary events with outgoing flows get their label placed to the left
  * to avoid overlapping the downward-exiting flow.
@@ -184,12 +184,18 @@ export async function adjustElementLabel(
   return false;
 }
 
+/** Gap (px) between connection segment and the nearest edge of the label box. */
+const FLOW_LABEL_SIDE_OFFSET = 5;
+
 /**
- * Center flow labels on their connection's midpoint.
+ * Position labeled flow labels at the midpoint of their first segment,
+ * offset perpendicular to the side with fewer shape overlaps.
  *
- * After layout recomputes waypoints, flow labels may be stranded far
- * from their connection's current geometry. This pass repositions each
- * labeled flow's label so its centre sits at the flow's path midpoint.
+ * - Horizontal first segment → above (preferred) or below.
+ * - Vertical first segment   → right (preferred) or left.
+ *
+ * This matches bpmn-js interactive placement: the label hugs the first
+ * bend of the connection rather than floating at the path midpoint.
  *
  * Returns the number of flow labels moved.
  */
@@ -197,6 +203,18 @@ export async function centerFlowLabels(diagram: DiagramState): Promise<number> {
   const modeling = getService(diagram.modeler, 'modeling');
   const elementRegistry = getService(diagram.modeler, 'elementRegistry');
   const allElements = getVisibleElements(elementRegistry);
+
+  // Non-container, non-flow shapes used when scoring candidate sides.
+  const shapes = allElements.filter(
+    (el: any) =>
+      el.type !== 'label' &&
+      !String(el.type).includes('Flow') &&
+      !String(el.type).includes('Association') &&
+      el.type !== 'bpmn:Participant' &&
+      el.type !== 'bpmn:Lane' &&
+      el.x !== undefined &&
+      el.width !== undefined
+  );
 
   const labeledFlows = allElements.filter(
     (el: any) =>
@@ -213,18 +231,13 @@ export async function centerFlowLabels(diagram: DiagramState): Promise<number> {
     const label = flow.label!;
     const waypoints = flow.waypoints!;
 
-    // Compute midpoint of the connection path
-    const midpoint = computeFlowMidpoint(waypoints);
-
     const labelW = label.width || DEFAULT_LABEL_SIZE.width;
     const labelH = label.height || DEFAULT_LABEL_SIZE.height;
 
-    // Position label centred on midpoint
-    const targetX = Math.round(midpoint.x - labelW / 2);
-    const targetY = Math.round(midpoint.y - labelH / 2);
+    const target = computeFirstSegmentLabelPos(waypoints, labelW, labelH, shapes);
 
-    const moveX = targetX - label.x;
-    const moveY = targetY - label.y;
+    const moveX = target.x - label.x;
+    const moveY = target.y - label.y;
 
     // Only move if displacement is significant (> 2px)
     if (Math.abs(moveX) > 2 || Math.abs(moveY) > 2) {
@@ -237,51 +250,55 @@ export async function centerFlowLabels(diagram: DiagramState): Promise<number> {
   return movedCount;
 }
 
-// ── Flow midpoint computation ──────────────────────────────────────────────
+// ── Flow label positioning ─────────────────────────────────────────────────
 
 /**
- * Compute the midpoint of a flow's waypoints for label placement.
+ * Compute the bpmn-js-style label position for a flow connection.
  *
- * Walks 50% of the total path length to find the exact midpoint.
+ * Takes the midpoint of the first segment (waypoints[0] → waypoints[1]),
+ * then places the label on the perpendicular side with fewer shape overlaps.
  */
-function computeFlowMidpoint(waypoints: Array<{ x: number; y: number }>): {
-  x: number;
-  y: number;
-} {
-  if (waypoints.length === 2) {
-    return {
-      x: (waypoints[0].x + waypoints[1].x) / 2,
-      y: (waypoints[0].y + waypoints[1].y) / 2,
-    };
-  }
+function computeFirstSegmentLabelPos(
+  waypoints: Array<{ x: number; y: number }>,
+  labelW: number,
+  labelH: number,
+  shapes: any[]
+): { x: number; y: number } {
+  const p0 = waypoints[0];
+  const p1 = waypoints[1];
 
-  // Walk to 50% of total path length
-  let totalLength = 0;
-  for (let i = 1; i < waypoints.length; i++) {
-    const dx = waypoints[i].x - waypoints[i - 1].x;
-    const dy = waypoints[i].y - waypoints[i - 1].y;
-    totalLength += Math.sqrt(dx * dx + dy * dy);
-  }
+  const midX = (p0.x + p1.x) / 2;
+  const midY = (p0.y + p1.y) / 2;
+  const isHoriz = Math.abs(p1.x - p0.x) >= Math.abs(p1.y - p0.y);
 
-  const halfLength = totalLength / 2;
-  let walked = 0;
-  for (let i = 1; i < waypoints.length; i++) {
-    const dx = waypoints[i].x - waypoints[i - 1].x;
-    const dy = waypoints[i].y - waypoints[i - 1].y;
-    const segLen = Math.sqrt(dx * dx + dy * dy);
-    if (walked + segLen >= halfLength && segLen > 0) {
-      const t = (halfLength - walked) / segLen;
-      return {
-        x: waypoints[i - 1].x + dx * t,
-        y: waypoints[i - 1].y + dy * t,
-      };
-    }
-    walked += segLen;
-  }
+  // Two perpendicular candidates — candidateA is the preferred default side.
+  const candidateA = isHoriz
+    ? { x: Math.round(midX - labelW / 2), y: Math.round(midY - FLOW_LABEL_SIDE_OFFSET - labelH) } // above
+    : { x: Math.round(midX + FLOW_LABEL_SIDE_OFFSET), y: Math.round(midY - labelH / 2) };          // right
+  const candidateB = isHoriz
+    ? { x: Math.round(midX - labelW / 2), y: Math.round(midY + FLOW_LABEL_SIDE_OFFSET) }           // below
+    : { x: Math.round(midX - FLOW_LABEL_SIDE_OFFSET - labelW), y: Math.round(midY - labelH / 2) }; // left
 
-  // Fallback: geometric midpoint of first and last
-  return {
-    x: (waypoints[0].x + waypoints[waypoints.length - 1].x) / 2,
-    y: (waypoints[0].y + waypoints[waypoints.length - 1].y) / 2,
-  };
+  return labelSideScore(candidateA, labelW, labelH, shapes) <=
+    labelSideScore(candidateB, labelW, labelH, shapes)
+    ? candidateA
+    : candidateB;
+}
+
+/** Count shape overlaps for a label candidate rect (lower score = better). */
+function labelSideScore(
+  pos: { x: number; y: number },
+  w: number,
+  h: number,
+  shapes: any[]
+): number {
+  const x2 = pos.x + w;
+  const y2 = pos.y + h;
+  let score = 0;
+  for (const s of shapes) {
+    if (s.x === undefined || s.y === undefined || s.width === undefined || s.height === undefined)
+      continue;
+    if (pos.x < s.x + s.width && x2 > s.x && pos.y < s.y + s.height && y2 > s.y) score++;
+  }
+  return score;
 }
