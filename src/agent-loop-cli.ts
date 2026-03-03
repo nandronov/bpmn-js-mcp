@@ -1,3 +1,45 @@
+/**
+ * agent-loop-cli — self-improving loop for the BPMN layout engine.
+ *
+ * Uses the GitHub Copilot CLI as an autonomous agent to iteratively improve
+ * the layout engine source code in src/rebuild/ by:
+ *
+ *  1. Requiring a clean git tree (refuses to run with uncommitted changes).
+ *  2. Running a baseline eval: builds fixed BPMN diagrams via the eval
+ *     scenarios (src/eval/scenarios.ts), runs the layout engine on them, and
+ *     scores the output on metrics such as overlaps, crossings, grid-snapping,
+ *     bend count, and detour ratio.
+ *  3. Looping N iterations (default 3, --iterations <n>):
+ *     a. Builds a prompt (agent-loop-prompt.ts) containing the scoring
+ *        formula, per-scenario penalties, architecture notes, allowed files,
+ *        and results of previous iterations so the agent can learn from them.
+ *     b. Invokes the `copilot` CLI with the prompt, injecting this MCP server
+ *        via --additional-mcp-config so the agent can inspect diagrams.
+ *        Shell commands (npm, git, node, make, rm, mv) are denied to sandbox
+ *        the agent.
+ *     c. Captures the git diff of whatever Copilot changed.
+ *     d. Validates the diff — rejects changes to protected eval files
+ *        (src/eval/scenarios.ts, score.ts, run-eval.ts, types.ts) and
+ *        forbidden paths (dist/, node_modules/).
+ *     e. Builds and tests the candidate (npm run build + npm test).
+ *     f. Re-runs the eval and compares aggregate scoreAvg to the baseline.
+ *     g. Accepts (git commit) if improvement ≥ minImprove (default 0.1);
+ *        otherwise hard-reverts (git reset --hard HEAD).
+ *  4. Generates a full audit trail: JSON audit log, markdown report with
+ *     SVG before/after comparisons, patch files, and token usage stats.
+ *
+ * The diagrams produced by the eval scenarios are purely a test harness.
+ * The agent's job is to improve the layout *algorithm* in src/rebuild/ so
+ * those same scenarios produce better-scoring output after each iteration.
+ *
+ * CLI flags:
+ *   --iterations <n>   Number of improvement iterations (default: 3)
+ *   --minImprove <f>   Minimum scoreAvg improvement to accept (default: 0.1)
+ *   --outputDir <dir>  Eval output directory (default: test-outputs/eval)
+ *   --repoDir <dir>    Repository root (default: cwd)
+ *   --model <name>     Copilot model to use (default: Copilot default)
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
