@@ -120,6 +120,16 @@ function findAssociatedElement(artifact: BpmnElement): BpmnElement | null {
  * - TextAnnotation: right edge + width/2, top - 50 - height/2
  * - DataObjectReference / DataStoreReference: right - 10 + width/2,
  *   bottom + 40 + height/2
+ *
+ * **Note on bpmn-js upstream discrepancy:**
+ * bpmn-js `BpmnAutoPlaceUtil.getDataElementPosition()` contains a bug where it
+ * uses `element.width / 2` for the Y offset instead of `element.height / 2`:
+ *   ```js
+ *   y: sourceTrbl.bottom + 40 + element.width / 2  // bug: should be height/2
+ *   ```
+ * Our implementation below correctly uses `element.height / 2`.  No change is
+ * needed here, but if upstream ever fixes this bug, our positions may diverge
+ * from bpmn-js interactive auto-place for data objects with non-square bounds.
  */
 function computeArtifactPosition(
   artifact: BpmnElement,

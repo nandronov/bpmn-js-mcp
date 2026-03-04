@@ -6,6 +6,131 @@
  * lane-layout.ts, so lane-layout.ts cannot import engine.ts).
  */
 
+import { segmentIntersectsRect } from '../geometry';
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+/** Axis-aligned bounding box (left-top origin, positive width/height). */
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// ── Obstruction detection ──────────────────────────────────────────────────
+
+/**
+ * Element types that should NOT be treated as obstructions when routing
+ * connections.  Flows, labels, and data-associations are transparent
+ * (they are connections themselves or decorators, not solid shapes).
+ */
+const NON_OBSTRUCTION_TYPES = new Set([
+  'bpmn:SequenceFlow',
+  'bpmn:MessageFlow',
+  'bpmn:Association',
+  'bpmn:DataInputAssociation',
+  'bpmn:DataOutputAssociation',
+  'label',
+]);
+
+/**
+ * Collect bounding boxes of sibling elements in the same parent container,
+ * excluding the source and target of the connection.
+ *
+ * Accesses siblings via `conn.source.parent.children`, which bpmn-js keeps
+ * current.  Returns an empty array when parent or children are unavailable.
+ */
+function getSiblingBounds(conn: any): Rect[] {
+  const source = conn.source;
+  const parent = source?.parent;
+  if (!parent?.children) return [];
+
+  const sourceId = source?.id;
+  const targetId = conn.target?.id;
+
+  const bounds: Rect[] = [];
+  for (const el of parent.children) {
+    if (el.id === sourceId || el.id === targetId) continue;
+    if (NON_OBSTRUCTION_TYPES.has(el.type)) continue;
+    if (el.x === undefined || el.y === undefined || !el.width || !el.height) continue;
+    bounds.push({ x: el.x, y: el.y, width: el.width, height: el.height });
+  }
+  return bounds;
+}
+
+/**
+ * Gap (px) added between a detected obstruction boundary and the detour path.
+ * Keeps the U-shape from grazing the element edge.
+ */
+const OBSTRUCTION_DETOUR_GAP = 20;
+
+/**
+ * Shrink factor applied to element bounding boxes when testing for path
+ * intersections.  Prevents false positives from elements that barely touch
+ * the path at shared edges (e.g. source/target neighbours).
+ */
+const OBSTRUCTION_SHRINK = 2;
+
+/**
+ * Check whether any segment of the L-shape path intersects an element bounding
+ * box from `siblingBounds`.  Bounding boxes are shrunk by `OBSTRUCTION_SHRINK`
+ * px on all sides to avoid false positives at shared-edge contacts.
+ *
+ * The L-shape path:
+ *   For different-Y: (sourceRight, sourceMidY) → (midX, sourceMidY) →
+ *                    (midX, targetMidY) → (targetLeft, targetMidY)
+ *   For same-Y:      (sourceRight, sourceMidY) → (targetLeft, targetMidY)
+ */
+function findLShapeObstructions(
+  sourceRight: number,
+  targetLeft: number,
+  sourceMidY: number,
+  targetMidY: number,
+  midX: number,
+  siblingBounds: Rect[]
+): { minY: number; maxY: number } | null {
+  if (siblingBounds.length === 0) return null;
+
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let blocked = false;
+
+  for (const bounds of siblingBounds) {
+    const rect: Rect = {
+      x: bounds.x + OBSTRUCTION_SHRINK,
+      y: bounds.y + OBSTRUCTION_SHRINK,
+      width: bounds.width - OBSTRUCTION_SHRINK * 2,
+      height: bounds.height - OBSTRUCTION_SHRINK * 2,
+    };
+    if (rect.width <= 0 || rect.height <= 0) continue;
+
+    // Same-Y connection uses a 2-point straight path; no midX turn.
+    const isSameY = Math.abs(sourceMidY - targetMidY) <= 1;
+    const intersects = isSameY
+      ? segmentIntersectsRect(
+          { x: sourceRight, y: sourceMidY },
+          { x: targetLeft, y: targetMidY },
+          rect
+        )
+      : segmentIntersectsRect(
+          { x: sourceRight, y: sourceMidY },
+          { x: midX, y: sourceMidY },
+          rect
+        ) ||
+        segmentIntersectsRect({ x: midX, y: sourceMidY }, { x: midX, y: targetMidY }, rect) ||
+        segmentIntersectsRect({ x: midX, y: targetMidY }, { x: targetLeft, y: targetMidY }, rect);
+
+    if (intersects) {
+      minY = Math.min(minY, bounds.y);
+      maxY = Math.max(maxY, bounds.y + bounds.height);
+      blocked = true;
+    }
+  }
+
+  return blocked ? { minY, maxY } : null;
+}
+
 // ── Sub-functions ──────────────────────────────────────────────────────────
 
 /**
@@ -97,13 +222,18 @@ function detectStaleRouting(
 /**
  * Assign a clean L-shaped (orthogonal) waypoint path to the connection.
  * Uses a 2-point straight path for same-Y connections, 4-point L-shape otherwise.
+ *
+ * When `siblingBounds` is provided, checks whether the L-shape intermediate
+ * segments would cross through any sibling element.  If blocked, routes via
+ * a U-shape detour that goes above or below the obstructing element(s).
  */
 function assignLShapeWaypoints(
   conn: any,
   sourceRight: number,
   targetLeft: number,
   sourceMidY: number,
-  targetMidY: number
+  targetMidY: number,
+  siblingBounds?: Rect[]
 ): void {
   const midX = Math.round((sourceRight + targetLeft) / 2);
   if (Math.abs(sourceMidY - targetMidY) <= 1) {
@@ -111,14 +241,47 @@ function assignLShapeWaypoints(
       { x: sourceRight, y: sourceMidY, original: { x: sourceRight, y: sourceMidY } },
       { x: targetLeft, y: targetMidY, original: { x: targetLeft, y: targetMidY } },
     ];
-  } else {
-    conn.waypoints = [
-      { x: sourceRight, y: sourceMidY, original: { x: sourceRight, y: sourceMidY } },
-      { x: midX, y: sourceMidY },
-      { x: midX, y: targetMidY },
-      { x: targetLeft, y: targetMidY, original: { x: targetLeft, y: targetMidY } },
-    ];
+    return;
   }
+
+  // Check for obstructions if sibling bounds are available
+  if (siblingBounds && siblingBounds.length > 0) {
+    const blocked = findLShapeObstructions(
+      sourceRight,
+      targetLeft,
+      sourceMidY,
+      targetMidY,
+      midX,
+      siblingBounds
+    );
+
+    if (blocked) {
+      // Route via U-shape to avoid the obstruction.
+      // Choose above or below based on which requires less Y deviation.
+      const detourBelow = blocked.maxY + OBSTRUCTION_DETOUR_GAP;
+      const detourAbove = blocked.minY - OBSTRUCTION_DETOUR_GAP;
+      const avgY = (sourceMidY + targetMidY) / 2;
+      const detourY =
+        Math.abs(detourBelow - avgY) <= Math.abs(detourAbove - avgY) ? detourBelow : detourAbove;
+
+      // U-shape: exit source right → go to detourY → traverse to targetLeft → enter target
+      conn.waypoints = [
+        { x: sourceRight, y: sourceMidY, original: { x: sourceRight, y: sourceMidY } },
+        { x: sourceRight, y: detourY },
+        { x: targetLeft, y: detourY },
+        { x: targetLeft, y: targetMidY, original: { x: targetLeft, y: targetMidY } },
+      ];
+      return;
+    }
+  }
+
+  // Standard L-shape (no obstruction)
+  conn.waypoints = [
+    { x: sourceRight, y: sourceMidY, original: { x: sourceRight, y: sourceMidY } },
+    { x: midX, y: sourceMidY },
+    { x: midX, y: targetMidY },
+    { x: targetLeft, y: targetMidY, original: { x: targetLeft, y: targetMidY } },
+  ];
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -133,6 +296,10 @@ function assignLShapeWaypoints(
  * waypoints are always set to a V→H fan-out path.  For other sources
  * the five detection checks in `detectStaleRouting` decide whether a
  * reset is needed.
+ *
+ * When sibling elements share a parent container with the source, checks
+ * whether the candidate L-shape path would cross through any of them.
+ * If blocked, routes via a U-shape detour above or below the obstruction.
  */
 export function resetStaleWaypoints(conn: any): void {
   const source = conn.source;
@@ -165,5 +332,8 @@ export function resetStaleWaypoints(conn: any): void {
 
   if (!detectStaleRouting(wps, source, target, sourceMidY, targetMidY, sourceRight)) return;
 
-  assignLShapeWaypoints(conn, sourceRight, targetLeft, sourceMidY, targetMidY);
+  // Collect sibling element bounds for obstruction-aware routing
+  const siblingBounds = getSiblingBounds(conn);
+
+  assignLShapeWaypoints(conn, sourceRight, targetLeft, sourceMidY, targetMidY, siblingBounds);
 }

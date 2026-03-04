@@ -424,6 +424,21 @@ function layoutBoundaryEventConnections(
 /**
  * Position boundary events on their host's bottom border and lay out
  * exception chain elements as linear chains below the host.
+ *
+ * **Boundary event placement convention:**
+ * Boundary events are always placed on the **lower edge** of their host
+ * element, matching bpmn-auto-layout's convention.  This is the most
+ * common BPMN pattern (exception flows go downward) and ensures
+ * consistent visual presentation regardless of the original DI position
+ * before layout.
+ *
+ * When multiple boundary events are attached to the same host, they are
+ * spread evenly along the bottom border from left to right.  A slight
+ * right-of-centre offset is used for a single boundary event to prevent
+ * it from coinciding with the exact host centre X.
+ *
+ * Exception chain elements are placed in rows below the host, one row
+ * per boundary event (staggered vertically to prevent overlap).
  */
 export function positionBoundaryEventsAndChains(
   boundaryInfos: BoundaryEventInfo[],

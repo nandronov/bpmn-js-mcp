@@ -49,6 +49,38 @@ function xmlHasDiagramDI(xml: string): boolean {
   return /Bounds[^>]*\swidth="[1-9]/.test(xml);
 }
 
+/**
+ * Maximum number of flow nodes (tasks + events) in a "simple linear" process
+ * that qualifies for skipping the rebuild step after bpmn-auto-layout.
+ *
+ * For processes at or below this threshold that contain no gateways and no
+ * subprocesses, bpmn-auto-layout produces clean enough grid-based output
+ * that the topology-driven rebuild step is unnecessary.
+ */
+const SIMPLE_PROCESS_REBUILD_THRESHOLD = 8;
+
+/**
+ * Heuristic: check if a process is "simple linear" — has no gateways,
+ * no subprocesses, no multi-pool collaboration, and ≤
+ * SIMPLE_PROCESS_REBUILD_THRESHOLD flow elements.
+ *
+ * For such processes, bpmn-auto-layout's grid-based layout is already clean
+ * and the rebuild step can be skipped to save processing time.
+ */
+function isSimpleLinearProcess(xml: string): boolean {
+  // Presence of gateways → not simple (requires topology-driven positioning)
+  if (/bpmn:(exclusive|parallel|inclusive|eventBased)Gateway/i.test(xml)) return false;
+  // Presence of subprocesses → not simple (requires inside-out rebuild)
+  if (/<bpmn:[Ss]ubProcess[\s>]/.test(xml)) return false;
+  // Multi-pool collaboration → not simple (requires pool-stacking rebuild)
+  if ((xml.match(/<bpmn:Participant[\s>]/g) || []).length > 1) return false;
+
+  // Count tasks and events. If there are too many, rebuild for cleaner layout.
+  const taskCount = (xml.match(/<bpmn:\w*[Tt]ask[\s>]/g) || []).length;
+  const eventCount = (xml.match(/<bpmn:(Start|End|Intermediate)\w*Event[\s>]/g) || []).length;
+  return taskCount + eventCount <= SIMPLE_PROCESS_REBUILD_THRESHOLD;
+}
+
 /** Resolve XML content from args.xml or args.filePath. Returns null + error result on failure. */
 function resolveXml(args: ImportXmlArgs): { xml: string } | { error: ToolResult } {
   if (args.filePath) {
@@ -100,9 +132,13 @@ export async function handleImportXml(
     hintLevel,
   };
 
-  if (shouldLayout) {
+  // Step 2: rebuild layout engine improves layout quality — but only when needed.
+  // For simple linear processes (no gateways, no subprocesses, ≤ threshold elements),
+  // bpmn-auto-layout's grid-based output is already clean enough to skip rebuild.
+  const shouldRebuild = shouldLayout && !isSimpleLinearProcess(xml);
+
+  if (shouldRebuild) {
     await progress?.(50, 100, 'Running rebuild auto-layout…');
-    // Step 2: rebuild layout engine improves layout quality
     rebuildLayout(diagram);
     await syncXml(diagram);
   }
@@ -114,6 +150,7 @@ export async function handleImportXml(
     success: true,
     diagramId,
     autoLayoutApplied: shouldLayout,
+    rebuildApplied: shouldRebuild,
     ...(filePath ? { sourceFile: filePath } : {}),
     historyNote:
       'Import creates a fresh modeler with an empty undo/redo history. ' +
