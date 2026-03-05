@@ -144,8 +144,12 @@ describe('linter', () => {
 
       const augmented = await appendLintFeedback(result, diagram!);
       expect(augmented.content.length).toBeGreaterThan(1);
-      const feedbackText = augmented.content[augmented.content.length - 1].text;
-      expect(feedbackText).toContain('⚠ Lint issues');
+      // Find the lint feedback text item (SVG image may also be appended when includeImage is set)
+      const feedbackItem = augmented.content.find(
+        (c: any) => c.type === 'text' && c.text?.includes('⚠ Lint issues')
+      );
+      expect(feedbackItem).toBeDefined();
+      expect((feedbackItem as any).text).toContain('⚠ Lint issues');
     });
 
     test('filters structural completeness rules from incremental feedback', async () => {
@@ -158,8 +162,11 @@ describe('linter', () => {
       };
 
       const augmented = await appendLintFeedback(result, diagram!);
-      // With structural rules filtered, empty process should have no errors reported
-      expect(augmented.content).toHaveLength(1);
+      // With structural rules filtered, empty process should have no lint error text appended
+      const lintFeedback = augmented.content.find(
+        (c: any) => c.type === 'text' && c.text?.includes('Lint issues')
+      );
+      expect(lintFeedback).toBeUndefined();
     });
 
     test('does not append feedback when only warnings exist', async () => {

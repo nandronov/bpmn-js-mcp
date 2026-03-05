@@ -32,10 +32,9 @@ export interface CreateDiagramArgs {
    */
   cloneFrom?: string;
   /**
-   * When true, every mutating tool response appends an ImageContent item with
+   * When true (default), every mutating tool response appends an ImageContent item with
    * the current diagram rendered as a base64-encoded SVG (mimeType: image/svg+xml).
-   * Opt-in to keep responses small by default. Suitable for visual UIs that
-   * display a live diagram preview. Default: false.
+   * Set to false to keep responses small (e.g. in CI or batch mode). Default: true.
    */
   includeImage?: boolean;
 }
@@ -166,7 +165,7 @@ export async function handleCreateDiagram(args: CreateDiagramArgs): Promise<Tool
     name: args.name,
     draftMode: args.draftMode ?? false,
     hintLevel,
-    includeImage: args.includeImage ?? false,
+    includeImage: args.includeImage ?? true,
   });
 
   const effectiveDraft = hintLevel === 'none' || (args.draftMode ?? false);
@@ -202,8 +201,9 @@ export async function handleCreateDiagram(args: CreateDiagramArgs): Promise<Tool
 
   const result = jsonResult(resultData);
 
-  // Append SVG image content when includeImage is set
-  if (args.includeImage) {
+  // Append SVG image content when includeImage is set (default: true)
+  const effectiveIncludeImage = args.includeImage ?? true;
+  if (effectiveIncludeImage) {
     await appendSvgImage(result, modeler);
   }
 
@@ -260,11 +260,10 @@ export const TOOL_DEFINITION = {
       includeImage: {
         type: 'boolean',
         description:
-          'When true, every mutating tool response appends an ImageContent item with the current ' +
+          'When true (default), every mutating tool response appends an ImageContent item with the current ' +
           'diagram rendered as a base64-encoded SVG (mimeType: image/svg+xml). ' +
-          'Opt-in to keep responses small by default. Suitable for visual UIs that display a live ' +
-          'diagram preview after each change. Default: false. ' +
-          'Deprecated: use hintLevel instead.',
+          'Set to false to keep responses small (e.g. in CI pipelines or batch processing). ' +
+          'Suitable for visual UIs that display a live diagram preview after each change.',
       },
     },
   },

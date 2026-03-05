@@ -97,4 +97,19 @@ describe('getPrompt', () => {
       expect(text).toContain('hintLevel');
     }
   });
+
+  test('executable prompt clarifies that external task output mappings come from the worker', () => {
+    const result = getPrompt('executable');
+    const text = result.messages[0].content.text;
+    // Guidance to prevent agents from putting static expressions on external tasks
+    expect(text).toMatch(/output mappings? on external tasks?.*worker/i);
+  });
+
+  test('executable prompt warns about afterElementId when using add_bpmn_element_chain', () => {
+    const result = getPrompt('executable');
+    const text = result.messages[0].content.text;
+    expect(text).toContain('afterElementId');
+    // Should warn that omitting creates a disconnected segment
+    expect(text).toMatch(/afterElementId.*disconnected|disconnected.*afterElementId/i);
+  });
 });

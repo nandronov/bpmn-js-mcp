@@ -214,6 +214,62 @@ async function runChainLoop(
   return { createdElements, unconnectedElements, warnings };
 }
 
+/**
+ * Emit a warning when no afterElementId is specified but the diagram already
+ * contains flow nodes — the new chain will be disconnected from them.
+ */
+function buildDisconnectedChainWarning(
+  elementRegistry: ReturnType<typeof getService<'elementRegistry'>>,
+  afterElementId: string | undefined
+): string[] {
+  if (afterElementId) return [];
+  const existingNodes = elementRegistry
+    .getAll()
+    .filter((el: any) => CHAIN_ELEMENT_TYPES.has(el.type));
+  if (existingNodes.length === 0) return [];
+  const lastEl = existingNodes[existingNodes.length - 1];
+  return [
+    `No afterElementId specified — the chain will be disconnected from the existing ` +
+      `${existingNodes.length} element(s) in the diagram. ` +
+      `Specify afterElementId to attach the chain after an existing element ` +
+      `(e.g. afterElementId: "${lastEl.id}").`,
+  ];
+}
+
+/** Build lane-membership warnings and nextSteps for a chain without laneId. */
+function buildLaneWarnings(
+  elementRegistry: ReturnType<typeof getService<'elementRegistry'>>,
+  effectiveParticipantId: string | undefined,
+  args: AddElementChainArgs
+): { warnings: string[]; nextSteps: Array<{ tool: string; description: string }> } {
+  if (!effectiveParticipantId) return { warnings: [], nextSteps: [] };
+  const hasTopLevelLaneId = !!args.laneId;
+  const allElementsHaveLaneId = args.elements.every((el) => !!el.laneId);
+  if (hasTopLevelLaneId || allElementsHaveLaneId) return { warnings: [], nextSteps: [] };
+  const lanes = elementRegistry
+    .getAll()
+    .filter((el: any) => el.type === 'bpmn:Lane' && el.parent?.id === effectiveParticipantId);
+  if (lanes.length === 0) return { warnings: [], nextSteps: [] };
+  const laneList = lanes
+    .map((l: any) => `${l.id} ("${l.businessObject?.name || 'unnamed'}")`)
+    .join(', ');
+  return {
+    warnings: [
+      `participantId "${effectiveParticipantId}" has lanes but no laneId was specified. ` +
+        `Chain elements may be placed outside all lanes. ` +
+        `Specify laneId on the chain or per element. Available lanes: ${laneList}`,
+    ],
+    nextSteps: [
+      {
+        tool: 'add_bpmn_element_chain',
+        description:
+          `Re-run with laneId set to one of the available lanes: ${laneList}. ` +
+          `Available lanes are listed above.`,
+      },
+    ],
+  };
+}
+
 export async function handleAddElementChain(args: AddElementChainArgs): Promise<ToolResult> {
   validateArgs(args, ['diagramId', 'elements']);
   const { diagramId, elements, afterElementId } = args;
@@ -222,6 +278,10 @@ export async function handleAddElementChain(args: AddElementChainArgs): Promise<
   const diagram = requireDiagram(diagramId);
   validateChainElements(elements, afterElementId, diagram);
   const elementRegistry = getService(diagram.modeler, 'elementRegistry');
+
+  // Check for disconnected chain BEFORE running the loop (state must be pre-mutation)
+  const preWarnings = buildDisconnectedChainWarning(elementRegistry, afterElementId);
+
   const initialParticipantId = resolveAnchorParticipantId(
     elementRegistry,
     afterElementId,
@@ -234,34 +294,13 @@ export async function handleAddElementChain(args: AddElementChainArgs): Promise<
     initialParticipantId
   );
 
-  // TODO #8: warn when participantId has lanes but no laneId is specified
-  const effectiveParticipantId = initialParticipantId;
-  const laneNextStep: Array<{ tool: string; description: string }> = [];
-  if (effectiveParticipantId) {
-    const hasTopLevelLaneId = !!args.laneId;
-    const allElementsHaveLaneId = elements.every((el) => !!el.laneId);
-    if (!hasTopLevelLaneId && !allElementsHaveLaneId) {
-      const lanes = elementRegistry
-        .getAll()
-        .filter((el: any) => el.type === 'bpmn:Lane' && el.parent?.id === effectiveParticipantId);
-      if (lanes.length > 0) {
-        const laneList = lanes
-          .map((l: any) => `${l.id} ("${l.businessObject?.name || 'unnamed'}")`)
-          .join(', ');
-        warnings.push(
-          `participantId "${effectiveParticipantId}" has lanes but no laneId was specified. ` +
-            `Chain elements may be placed outside all lanes. ` +
-            `Specify laneId on the chain or per element. Available lanes: ${laneList}`
-        );
-        laneNextStep.push({
-          tool: 'add_bpmn_element_chain',
-          description:
-            `Re-run with laneId set to one of the available lanes: ${laneList}. ` +
-            `Available lanes are listed above.`,
-        });
-      }
-    }
-  }
+  // Prepend disconnected-chain warning (collected before mutation)
+  warnings.unshift(...preWarnings);
+
+  // Build lane warnings and next steps
+  const laneResult = buildLaneWarnings(elementRegistry, initialParticipantId, args);
+  warnings.push(...laneResult.warnings);
+  const laneNextStep = laneResult.nextSteps;
 
   const chainHasGateway = elements.some((el) => GATEWAY_TYPES.has(el.elementType));
   const shouldLayout = args.autoLayout !== false && !chainHasGateway;

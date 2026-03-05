@@ -329,4 +329,55 @@ describe('add_bpmn_element_chain', () => {
     );
     expect(laneWarning).toBeDefined();
   });
+
+  test('warns when no afterElementId provided in non-empty diagram', async () => {
+    const diagramId = await createDiagram();
+    // Add a start event first so the diagram is non-empty
+    await addElement(diagramId, 'bpmn:StartEvent', { name: 'Start' });
+
+    const res = parseResult(
+      await handleAddElementChain({
+        diagramId,
+        // No afterElementId — should warn about disconnected chain
+        elements: [
+          { elementType: 'bpmn:UserTask', name: 'Task A' },
+          { elementType: 'bpmn:EndEvent', name: 'End' },
+        ],
+        autoLayout: false,
+      })
+    );
+
+    expect(res.success).toBe(true);
+    expect(Array.isArray(res.warnings)).toBe(true);
+    const disconnectWarning = res.warnings.find((w: string) =>
+      /disconnected|afterElementId/i.test(w)
+    );
+    expect(disconnectWarning).toBeDefined();
+  });
+
+  test('no disconnected warning when no afterElementId but diagram is empty', async () => {
+    const diagramId = await createDiagram();
+
+    const res = parseResult(
+      await handleAddElementChain({
+        diagramId,
+        // No afterElementId — but diagram is empty, so no warning expected
+        elements: [
+          { elementType: 'bpmn:StartEvent', name: 'Start' },
+          { elementType: 'bpmn:UserTask', name: 'Task A' },
+          { elementType: 'bpmn:EndEvent', name: 'End' },
+        ],
+        autoLayout: false,
+      })
+    );
+
+    expect(res.success).toBe(true);
+    // Should not have a disconnected warning for a fresh/empty diagram
+    if (res.warnings) {
+      const disconnectWarning = res.warnings.find((w: string) =>
+        /disconnected.*afterElementId|afterElementId.*disconnected/i.test(w)
+      );
+      expect(disconnectWarning).toBeUndefined();
+    }
+  });
 });

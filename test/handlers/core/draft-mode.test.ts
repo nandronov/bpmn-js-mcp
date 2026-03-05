@@ -31,8 +31,10 @@ describe('create_bpmn_diagram — draft mode', () => {
   });
 
   test('suppresses lint feedback when draftMode is true', async () => {
-    // Create a diagram in draft mode
-    const draftRes = parseResult(await handleCreateDiagram({ name: 'Draft', draftMode: true }));
+    // Create a diagram in draft mode with includeImage:false to get predictable content length
+    const draftRes = parseResult(
+      await handleCreateDiagram({ name: 'Draft', draftMode: true, includeImage: false })
+    );
     const draftId = draftRes.diagramId;
 
     // Add a disconnected task — normally would trigger lint errors
@@ -42,7 +44,7 @@ describe('create_bpmn_diagram — draft mode', () => {
       name: 'Disconnected Task',
     });
 
-    // In draft mode, no lint feedback should be appended
+    // In draft mode, no lint feedback should be appended (1 content item: just the JSON text)
     expect(addRes.content.length).toBe(1);
     expect(addRes.content[0].text).not.toContain('Lint issues');
   });

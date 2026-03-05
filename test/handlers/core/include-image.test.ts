@@ -24,8 +24,15 @@ describe('includeImage option on create_bpmn_diagram', () => {
     expect((imageItem as any).data.length).toBeGreaterThan(0);
   });
 
-  test('create_bpmn_diagram without includeImage returns no image content', async () => {
+  test('create_bpmn_diagram without includeImage returns image content by default', async () => {
     const result = await handleCreateDiagram({});
+    const imageItem = result.content.find((c: any) => c.type === 'image');
+    expect(imageItem).toBeDefined();
+    expect((imageItem as any).mimeType).toBe('image/svg+xml');
+  });
+
+  test('create_bpmn_diagram with includeImage:false returns no image content', async () => {
+    const result = await handleCreateDiagram({ includeImage: false });
     const imageItem = result.content.find((c: any) => c.type === 'image');
     expect(imageItem).toBeUndefined();
   });
@@ -56,8 +63,8 @@ describe('includeImage option on create_bpmn_diagram', () => {
     expect((imageItem as any).mimeType).toBe('image/svg+xml');
   });
 
-  test('mutating tool does not include image when includeImage is false (default)', async () => {
-    const createResult = await handleCreateDiagram({});
+  test('mutating tool does not include image when includeImage is explicitly false', async () => {
+    const createResult = await handleCreateDiagram({ includeImage: false });
     const { diagramId } = parseResult(createResult);
 
     const addResult = await handleAddElement({
