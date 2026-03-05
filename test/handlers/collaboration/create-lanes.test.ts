@@ -132,4 +132,49 @@ describe('create_bpmn_lanes', () => {
       })
     ).rejects.toThrow(/already has/);
   });
+
+  // ── mergeFrom (merged from convert_bpmn_collaboration_to_lanes) ───────────
+
+  test('mergeFrom converts a collaboration to a single pool with lanes', async () => {
+    const { handleCreateParticipant, handleAddElement } = await import('../../../src/handlers');
+    const diagramId = await createDiagram();
+
+    // Create a two-pool collaboration
+    const poolRes = parseResult(
+      await handleCreateParticipant({
+        diagramId,
+        participants: [{ name: 'Pool A' }, { name: 'Pool B' }],
+      })
+    );
+    const [poolA, poolB] = poolRes.participantIds as string[];
+
+    // Add a start event to Pool A
+    await handleAddElement({ diagramId, elementType: 'bpmn:StartEvent', participantId: poolA });
+    // Add a task to Pool B
+    await handleAddElement({
+      diagramId,
+      elementType: 'bpmn:Task',
+      name: 'B Task',
+      participantId: poolB,
+    });
+
+    // mergeFrom: pass the main participant ID to keep
+    const res = parseResult(
+      await handleCreateLanes({
+        diagramId,
+        participantId: poolA,
+        mergeFrom: poolA,
+        lanes: [{ name: 'Lane A' }, { name: 'Lane B' }],
+        layout: false,
+      })
+    );
+
+    expect(res.success).toBe(true);
+    // After merge there should be only one pool
+    const { handleListElements } = await import('../../../src/handlers');
+    const els = parseResult(
+      await handleListElements({ diagramId, elementType: 'bpmn:Participant' })
+    );
+    expect(els.count).toBe(1);
+  });
 });

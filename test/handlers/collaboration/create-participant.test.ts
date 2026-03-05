@@ -141,4 +141,44 @@ describe('create_bpmn_participant', () => {
     // Pool with 3 lanes should use dynamic sizing (wider than old default 600)
     expect(pool.width).toBeGreaterThan(600);
   });
+
+  // ── wrapExisting (merged from wrap_bpmn_process_in_collaboration) ─────────
+
+  test('wrapExisting wraps the existing process in a participant', async () => {
+    const diagramId = await createDiagram();
+    const { addElement, connect, exportXml } = await import('../../helpers');
+    const start = await addElement(diagramId, 'bpmn:StartEvent', { name: 'Start' });
+    const task = await addElement(diagramId, 'bpmn:UserTask', { name: 'Do Work' });
+    const end = await addElement(diagramId, 'bpmn:EndEvent', { name: 'End' });
+    await connect(diagramId, start, task);
+    await connect(diagramId, task, end);
+
+    const res = parseResult(
+      await handleCreateParticipant({ diagramId, name: 'My Organization', wrapExisting: true })
+    );
+
+    expect(res.success).toBe(true);
+    expect(res.mainParticipantId).toBeTruthy();
+
+    const xml = await exportXml(diagramId);
+    expect(xml).toContain('Do Work');
+    expect(xml).toContain('My Organization');
+  });
+
+  test('wrapExisting with additionalParticipants adds collapsed pools', async () => {
+    const diagramId = await createDiagram();
+    const { addElement } = await import('../../helpers');
+    await addElement(diagramId, 'bpmn:StartEvent', {});
+
+    const res = parseResult(
+      await handleCreateParticipant({
+        diagramId,
+        name: 'Main Pool',
+        wrapExisting: true,
+        additionalParticipants: [{ name: 'Partner A' }, { name: 'Partner B' }],
+      })
+    );
+
+    expect(res.success).toBe(true);
+  });
 });

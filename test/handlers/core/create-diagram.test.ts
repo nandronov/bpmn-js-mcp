@@ -2,9 +2,10 @@ import { describe, test, expect, beforeEach } from 'vitest';
 import {
   handleCreateDiagram,
   handleExportBpmn,
+  handleListElements,
   handleValidate as handleLintDiagram,
 } from '../../../src/handlers';
-import { parseResult, createDiagram, clearDiagrams } from '../../helpers';
+import { parseResult, createDiagram, addElement, clearDiagrams } from '../../helpers';
 
 describe('create_bpmn_diagram', () => {
   beforeEach(() => {
@@ -78,5 +79,28 @@ describe('create_bpmn_diagram', () => {
     // Should discourage multiple expanded pools
     const guidance: string = res.structureGuidance ?? '';
     expect(guidance.toLowerCase()).toMatch(/one pool|single pool|one executable/);
+  });
+
+  // ── cloneFrom (merged from clone_bpmn_diagram) ────────────────────────────
+
+  test('cloneFrom creates a copy with a new ID', async () => {
+    const diagramId = await createDiagram('Original');
+    await addElement(diagramId, 'bpmn:Task', { name: 'My Task' });
+
+    const res = parseResult(await handleCreateDiagram({ cloneFrom: diagramId }));
+    expect(res.success).toBe(true);
+    expect(res.diagramId).not.toBe(diagramId);
+    expect(res.clonedFrom).toBe(diagramId);
+
+    // Cloned diagram should have the same elements
+    const origList = parseResult(await handleListElements({ diagramId }));
+    const cloneList = parseResult(await handleListElements({ diagramId: res.diagramId }));
+    expect(cloneList.count).toBe(origList.count);
+  });
+
+  test('cloneFrom allows overriding the name', async () => {
+    const diagramId = await createDiagram('Original');
+    const res = parseResult(await handleCreateDiagram({ cloneFrom: diagramId, name: 'Clone' }));
+    expect(res.name).toBe('Clone');
   });
 });

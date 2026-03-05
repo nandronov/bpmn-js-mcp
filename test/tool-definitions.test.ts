@@ -14,7 +14,7 @@ describe('tool-definitions', () => {
   const toolNames = TOOL_DEFINITIONS.map((t) => t.name);
 
   test('exports the expected number of tools', () => {
-    expect(TOOL_DEFINITIONS.length).toBe(39);
+    expect(TOOL_DEFINITIONS.length).toBe(36);
   });
 
   test.each([
@@ -48,17 +48,35 @@ describe('tool-definitions', () => {
     'redistribute_bpmn_elements_across_lanes',
     'replace_bpmn_element',
     'list_bpmn_process_variables',
-    'clone_bpmn_diagram',
+    // clone_bpmn_diagram removed — use create_bpmn_diagram with cloneFrom
     'diff_bpmn_diagrams',
     'add_bpmn_element_chain',
     'set_bpmn_connection_waypoints',
     'assign_bpmn_elements_to_lane',
-    'wrap_bpmn_process_in_collaboration',
+    // wrap_bpmn_process_in_collaboration removed — use create_bpmn_participant with wrapExisting
     'handoff_bpmn_to_lane',
-    'convert_bpmn_collaboration_to_lanes',
+    // convert_bpmn_collaboration_to_lanes removed — use create_bpmn_lanes with mergeFrom
     'autosize_bpmn_pools_and_lanes',
   ])("includes tool '%s'", (name) => {
     expect(toolNames).toContain(name);
+  });
+
+  test('create_bpmn_diagram has cloneFrom parameter (merged from clone_bpmn_diagram)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'create_bpmn_diagram');
+    const schema = getSchema(tool);
+    expect(schema.properties).toHaveProperty('cloneFrom');
+  });
+
+  test('create_bpmn_participant has wrapExisting parameter (merged from wrap_bpmn_process_in_collaboration)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'create_bpmn_participant');
+    const schema = getSchema(tool);
+    expect(schema.properties).toHaveProperty('wrapExisting');
+  });
+
+  test('create_bpmn_lanes has mergeFrom parameter (merged from convert_bpmn_collaboration_to_lanes)', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'create_bpmn_lanes');
+    const schema = getSchema(tool);
+    expect(schema.properties).toHaveProperty('mergeFrom');
   });
 
   test("every tool has an inputSchema with type 'object'", () => {

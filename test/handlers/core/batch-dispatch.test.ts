@@ -20,8 +20,11 @@ describe('batch_bpmn_operations — all tools dispatchable', () => {
 
   test('dispatch map covers exactly the same tools as TOOL_DEFINITIONS', () => {
     // The dispatch map is auto-derived from TOOL_REGISTRY, same as TOOL_DEFINITIONS.
-    // Verify counts match (39 tools).
-    expect(TOOL_DEFINITIONS.length).toBe(39);
+    // Verify counts match (36 tools — 3 removed via high-priority tool consolidation:
+    //   clone_bpmn_diagram → create_bpmn_diagram (cloneFrom),
+    //   wrap_bpmn_process_in_collaboration → create_bpmn_participant (wrapExisting),
+    //   convert_bpmn_collaboration_to_lanes → create_bpmn_lanes (mergeFrom)).
+    expect(TOOL_DEFINITIONS.length).toBe(36);
 
     // Verify no tool name is duplicated
     const names = TOOL_DEFINITIONS.map((t) => t.name);

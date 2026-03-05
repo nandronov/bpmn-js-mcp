@@ -1,8 +1,9 @@
 /**
  * Prompt definitions for MCP prompts.
  *
- * Separated from prompts.ts to keep file sizes under the lint limit.
- * Each prompt provides step-by-step instructions for a common BPMN pattern.
+ * Three modeling-style prompts that toggle how the agent builds diagrams.
+ * Each prompt instructs the agent on proper MCP tool usage and reminds
+ * it to export the final diagram using export_bpmn with a filePath.
  */
 
 /** Reusable interface for prompt definitions. */
@@ -20,551 +21,487 @@ export interface PromptDefinition {
   ) => Array<{ role: 'user' | 'assistant'; content: { type: 'text'; text: string } }>;
 }
 
-/** Default placeholder for diagram IDs. */
+// ── Shared helpers ─────────────────────────────────────────────────────────
+
+/** Return arg value or fallback default. */
+function arg(args: Record<string, string>, key: string, fallback = ''): string {
+  return args[key] ?? fallback;
+}
+
+/** Common placeholder defaults for prompt arguments. */
 const DEFAULT_DIAGRAM_ID = '<diagramId>';
-
-/** Default placeholder for element IDs. */
 const DEFAULT_ELEMENT_ID = '<elementId>';
-
-// ── Error handling prompt ──────────────────────────────────────────────────
-
-const addErrorHandlingPattern: PromptDefinition = {
-  name: 'add-error-handling-pattern',
-  title: 'Add error handling pattern',
-  description:
-    'Add error handling to a service task or subprocess using error boundary events, ' +
-    'error end events, and optional retry/escalation paths. Covers both boundary event ' +
-    'and event subprocess approaches.',
-  arguments: [
-    {
-      name: 'diagramId',
-      description: 'The diagram ID',
-      required: true,
-    },
-    {
-      name: 'targetElementId',
-      description: 'The ID of the service task or subprocess to add error handling to',
-      required: true,
-    },
-    {
-      name: 'errorCode',
-      description: 'The error code to catch (e.g. "PAYMENT_FAILED", "VALIDATION_ERROR")',
-      required: false,
-    },
-  ],
-  getMessages: (args) => {
-    const diagramId = args.diagramId || DEFAULT_DIAGRAM_ID;
-    const targetId = args.targetElementId || DEFAULT_ELEMENT_ID;
-    const errorCode = args.errorCode || 'ERROR_001';
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Add error handling to element "${targetId}" in diagram "${diagramId}" ` +
-            `for error code "${errorCode}".\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Add error boundary event**: Use \`add_bpmn_element\` with:\n` +
-            `   - elementType: "bpmn:BoundaryEvent"\n` +
-            `   - hostElementId: "${targetId}"\n` +
-            `   - eventDefinitionType: "bpmn:ErrorEventDefinition"\n` +
-            `   - errorRef: { id: "Error_${errorCode}", name: "${errorCode}", ` +
-            `errorCode: "${errorCode}" }\n` +
-            `   - name: "${errorCode}"\n` +
-            `2. **Add error handling path**: After the boundary event:\n` +
-            `   - For retry: add a ServiceTask ("Retry Operation") with a loop or timer\n` +
-            `   - For compensation: add tasks to undo/rollback the failed operation\n` +
-            `   - For notification: add a SendTask ("Notify Error") to alert stakeholders\n` +
-            `   - For escalation: add a UserTask ("Handle Error Manually") assigned to ` +
-            `support\n` +
-            `3. **End the error path**: Connect to an EndEvent (optionally an Error End ` +
-            `Event to propagate the error to a parent process)\n` +
-            `4. **Layout**: Run \`layout_bpmn_diagram\` to arrange the error handling path\n\n` +
-            `**Advanced: Event subprocess approach** (for errors anywhere in a subprocess):\n` +
-            `1. Create a \`bpmn:SubProcess\` and use \`set_bpmn_element_properties\` to set ` +
-            `\`triggeredByEvent: true\` and \`isExpanded: true\`\n` +
-            `2. Add a StartEvent with \`bpmn:ErrorEventDefinition\` inside the event ` +
-            `subprocess\n` +
-            `3. Add error handling tasks and an end event\n\n` +
-            `**Best practices:**\n` +
-            `- Use specific error codes to catch specific errors (not catch-all)\n` +
-            `- Always provide a fallback path for unexpected errors\n` +
-            `- Consider whether the error should interrupt the task (boundary event) ` +
-            `or be handled in parallel (non-interrupting boundary event)\n` +
-            `- For external tasks, configure \`camunda:ErrorEventDefinition\` on the ` +
-            `ServiceTask to map worker errors to BPMN errors`,
-        },
-      },
-    ];
-  },
+const ARG_DIAGRAM_ID = {
+  name: 'diagramId',
+  description: 'Target diagram ID',
+  required: true as const,
 };
 
-// ── Parallel tasks prompt ──────────────────────────────────────────────────
+// ── Additional prompts ─────────────────────────────────────────────────────
 
-const addParallelTasksPattern: PromptDefinition = {
-  name: 'add-parallel-tasks-pattern',
-  title: 'Add parallel execution pattern',
-  description:
-    'Add a parallel gateway pattern: split into concurrent branches, execute tasks ' +
-    'in parallel, and merge with a synchronizing parallel gateway. Includes best ' +
-    'practices for parallel execution.',
-  arguments: [
-    {
-      name: 'diagramId',
-      description: 'The diagram ID',
-      required: true,
-    },
-    {
-      name: 'afterElementId',
-      description: 'The ID of the element after which to add the parallel pattern',
-      required: true,
-    },
-    {
-      name: 'branches',
-      description:
-        'Comma-separated list of parallel branch names ' +
-        '(e.g. "Check Inventory, Process Payment, Send Confirmation")',
-      required: true,
-    },
-  ],
-  getMessages: (args) => {
-    const diagramId = args.diagramId || DEFAULT_DIAGRAM_ID;
-    const afterId = args.afterElementId || DEFAULT_ELEMENT_ID;
-    const branches = args.branches
-      ? args.branches.split(',').map((b) => b.trim())
-      : ['Task A', 'Task B', 'Task C'];
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Add a parallel execution pattern after element "${afterId}" in diagram ` +
-            `"${diagramId}" with these parallel branches: ${branches.join(', ')}.\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Add parallel split gateway**: Use \`add_bpmn_element\` with:\n` +
-            `   - elementType: "bpmn:ParallelGateway"\n` +
-            `   - name: "" (parallel gateways typically have no label)\n` +
-            `   - afterElementId: "${afterId}"\n` +
-            `2. **Add parallel branches**: For each branch, add a task:\n` +
-            branches
-              .map(
-                (b, i) =>
-                  `   - Branch ${i + 1}: Add a task named "${b}" ` +
-                  `(choose UserTask, ServiceTask, etc. as appropriate)`
-              )
-              .join('\n') +
-            `\n` +
-            `3. **Connect split gateway to all branches**: Use \`connect_bpmn_elements\` ` +
-            `to connect the parallel gateway to each branch task. Do NOT set conditions ` +
-            `\u2014 parallel gateways take ALL outgoing flows unconditionally.\n` +
-            `4. **Add parallel merge gateway**: Add another \`bpmn:ParallelGateway\` after ` +
-            `the branch tasks to synchronize all branches.\n` +
-            `5. **Connect branches to merge gateway**: Connect each branch task to the ` +
-            `merge gateway.\n` +
-            `6. **Continue the flow**: Connect the merge gateway to the next element.\n` +
-            `7. **Layout**: Run \`layout_bpmn_diagram\` to arrange the parallel structure.\n\n` +
-            `**Best practices:**\n` +
-            `- Always use a ParallelGateway (not ExclusiveGateway) for the merge \u2014 ` +
-            `the merge waits for ALL branches to complete before continuing.\n` +
-            `- Do NOT set conditions on outgoing flows of parallel gateways.\n` +
-            `- Do NOT set a default flow on parallel gateways.\n` +
-            `- Each branch is independent \u2014 no sequence flows between parallel branches.\n` +
-            `- If a branch has multiple tasks, connect them in sequence within the branch.\n` +
-            `- Consider adding error boundary events on tasks that might fail.\n\n` +
-            `**\u26a0\ufe0f Critical: Avoid deadlocks \u2014 EVERY branch MUST connect to the merge gateway:**\n` +
-            `- A parallel join gateway waits for a token from EVERY incoming branch. If even one ` +
-            `branch terminates at an EndEvent without flowing through the join, the join will ` +
-            `DEADLOCK waiting for a token that never arrives.\n` +
-            `- Never let a parallel branch end at an EndEvent if there is a join gateway. ` +
-            `If a branch should be optional, use an InclusiveGateway instead of a ` +
-            `ParallelGateway.\n` +
-            `- After connecting all branches, verify: every outgoing flow of the split gateway ` +
-            `traces a path to the merge gateway. Use \`validate_bpmn_diagram\` \u2014 the ` +
-            `\`bpmn-mcp/parallel-gateway-balance\` rule will warn if branches are missing.\n\n` +
-            `**\u26a0\ufe0f Critical: Never use implicit splits (task with multiple outgoing flows):**\n` +
-            `- Always route outgoing flows through an explicit ParallelGateway or ` +
-            `ExclusiveGateway. Connecting two sequence flows directly from the same task ` +
-            `(without a gateway) creates an \u201cimplicit split\u201d that is ` +
-            `semantically ambiguous and will be flagged by \`bpmn-mcp/implicit-split\`.\n` +
-            `- Example of CORRECT pattern: Task \u2192 ParallelGateway \u2192 Branch A, Branch B\n` +
-            `- Example of INCORRECT pattern: Task \u2192 Branch A AND Task \u2192 Branch B ` +
-            `(two outgoing flows from the same task, no gateway)`,
-        },
-      },
-    ];
-  },
-};
-
-// ── Decision gateway with loopback prompt ──────────────────────────────────
-
-const addDecisionGatewayPattern: PromptDefinition = {
-  name: 'add-decision-gateway-pattern',
-  title: 'Add decision gateway with optional loopback',
-  description:
-    'Add a decision gateway (exclusive gateway) pattern after a task, with a "Yes" path ' +
-    'continuing forward and a "No" path looping back to a previous task for rework. ' +
-    'Includes proper conditions, default flow, labels, and layout guidance.',
-  arguments: [
-    {
-      name: 'diagramId',
-      description: 'The diagram ID',
-      required: true,
-    },
-    {
-      name: 'afterElementId',
-      description: 'The ID of the task after which to add the decision gateway',
-      required: true,
-    },
-    {
-      name: 'loopbackTargetId',
-      description:
-        'The ID of the task to loop back to on "No" (e.g. the task that needs rework). ' +
-        'If omitted, the "No" path ends at an end event instead of looping back.',
-      required: false,
-    },
-    {
-      name: 'conditionVariable',
-      description:
-        'The process variable to check in the gateway condition (e.g. "approved", "confirmed")',
-      required: false,
-    },
-  ],
-  getMessages: (args) => {
-    const diagramId = args.diagramId || DEFAULT_DIAGRAM_ID;
-    const afterId = args.afterElementId || DEFAULT_ELEMENT_ID;
-    const loopbackId = args.loopbackTargetId;
-    const variable = args.conditionVariable || 'confirmed';
-    const gatewayQuestion = variable.charAt(0).toUpperCase() + variable.slice(1) + '?';
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Add a decision gateway after element "${afterId}" in diagram "${diagramId}" ` +
-            `checking the "${variable}" variable` +
-            (loopbackId ? ` with a loopback to "${loopbackId}" on "No"` : '') +
-            `.\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Add exclusive gateway**: Use \`add_bpmn_element\` with:\n` +
-            `   - elementType: "bpmn:ExclusiveGateway"\n` +
-            `   - name: "${gatewayQuestion}"\n` +
-            `   - afterElementId: "${afterId}"\n` +
-            `2. **Add "Yes" path** (happy path — continues forward):\n` +
-            `   - Add the next task or connect to the existing downstream element\n` +
-            `   - Use \`connect_bpmn_elements\` with:\n` +
-            `     - conditionExpression: '\${${variable} == true}'\n` +
-            `     - label: "Yes"\n` +
-            `   - Mark this as the default flow with isDefault: true\n` +
-            `3. **Add "No" path**` +
-            (loopbackId
-              ? ` (loopback to rework):\n` +
-                `   - Use \`connect_bpmn_elements\` from the gateway to "${loopbackId}" with:\n` +
-                `     - conditionExpression: '\${${variable} == false}'\n` +
-                `     - label: "No"\n`
-              : ` (rejection/alternative):\n` +
-                `   - Add a task or end event for the "No" path\n` +
-                `   - Use \`connect_bpmn_elements\` with:\n` +
-                `     - conditionExpression: '\${${variable} == false}'\n` +
-                `     - label: "No"\n`) +
-            `4. **Layout**: Run \`layout_bpmn_diagram\` with:\n` +
-            `   - compactness: "spacious" (gives room for the loopback)\n` +
-            `5. **Label cleanup**: Run \`layout_bpmn_diagram\` with labelsOnly: true to position flow labels clearly\n\n` +
-            `**Layout geometry for decision gateway patterns:**\n` +
-            `- The "Yes" path should go straight right (same Y as the gateway)\n` +
-            (loopbackId
-              ? `- The "No" loopback should route below the main path: down → left → up\n` +
-                `  (a clean U-shape below the happy path row)\n`
-              : `- The "No" path should branch downward from the gateway\n`) +
-            `- Keep the gateway aligned horizontally with surrounding elements\n\n` +
-            `**Best practices:**\n` +
-            `- Name the gateway as a yes/no question ("${gatewayQuestion}")\n` +
-            `- Label outgoing flows as answers ("Yes", "No")\n` +
-            `- Always set condition expressions on non-default outgoing flows\n` +
-            `- Always mark one flow as the default (taken when no condition matches)\n` +
-            (loopbackId
-              ? `- For loopbacks, consider adding a rework annotation or intermediate task ` +
-                `on the "No" path for clarity (e.g. "Revise Details")\n`
-              : '') +
-            `- Use \`validate_bpmn_diagram\` to check for missing conditions or default flows`,
-        },
-      },
-    ];
-  },
-};
-
-// ── Lane-based process prompt ──────────────────────────────────────────────
-
-const createLaneBasedProcess: PromptDefinition = {
-  name: 'create-lane-based-process',
-  title: 'Create process with swim lanes for role separation',
-  description:
-    'Create a BPMN process using swim lanes (within a single pool) to separate work ' +
-    'by role or department. Includes guidance on when to use lanes vs. collaboration pools.',
-  arguments: [
-    {
-      name: 'processName',
-      description: 'Name for the process (e.g. "Order Fulfillment")',
-      required: true,
-    },
-    {
-      name: 'roles',
-      description:
-        'Comma-separated list of roles/departments ' +
-        '(e.g. "Customer Service, Warehouse, Shipping")',
-      required: true,
-    },
-    {
-      name: 'description',
-      description: 'Brief description of what the process should do',
-      required: false,
-    },
-  ],
-  getMessages: (args) => {
-    const name = args.processName || 'My Process';
-    const roles = args.roles ? args.roles.split(',').map((r) => r.trim()) : ['Role A', 'Role B'];
-    const desc = args.description ? `\n\nProcess description: ${args.description}` : '';
-    const lanesJson = roles.map((r) => `{ "name": "${r}" }`).join(', ');
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Create a lane-based BPMN process called "${name}" with roles: ${roles.join(', ')}.${desc}\n\n` +
-            `**When to use lanes vs. pools:**\n` +
-            `- **Lanes** (swim lanes within a single pool): Use when the roles are ` +
-            `within the same organisation or process — e.g. departments, job roles, ` +
-            `teams that share a common workflow. Elements are connected with sequence flows.\n` +
-            `- **Pools** (collaboration diagram): Use when modelling separate organisations ` +
-            `or independent systems that communicate via messages — e.g. Customer ↔ Supplier, ` +
-            `or your system ↔ external payment gateway. Elements across pools use message flows.\n\n` +
-            `This process uses **lanes** because ${roles.join(', ')} are roles within the same process.\n\n` +
-            `**Important:** Do NOT create multiple expanded pools — use lanes within one pool.\n` +
-            `Multiple expanded pools cannot be deployed together in Camunda 7 / Operaton.\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Create diagram and pool with lanes in one step**:\n` +
-            `   - Use \`create_bpmn_diagram\` with \`workflowContext: "single-organization"\`\n` +
-            `   - Then use \`create_bpmn_participant\` with \`name: "${name}"\` and \`lanes: [${lanesJson}]\`\n` +
-            `     This creates the pool AND lanes in a single call — do NOT call \`create_bpmn_lanes\` separately.\n` +
-            `   - Example for Customer / Store / Payment / Delivery:\n` +
-            `     \`\`\`\n` +
-            `     create_bpmn_participant({ name: "${name}", lanes: [{ name: "${roles[0]}" }` +
-            (roles.length > 1 ? `, { name: "${roles[1]}" }` : '') +
-            (roles.length > 2 ? `, { name: "${roles[2]}" }` : '') +
-            (roles.length > 3 ? `, { name: "${roles[3]}" }` : '') +
-            `] })\n` +
-            `     \`\`\`\n` +
-            `2. **Analyze lane organization before adding elements**: Run \`analyze_bpmn_lanes\` ` +
-            `with \`mode: "suggest"\` to get lane assignment recommendations based on ` +
-            `the roles. This helps decide which tasks belong to which lane before you start adding elements:\n` +
-            `   - \`analyze_bpmn_lanes({ diagramId, mode: "suggest" })\`\n` +
-            `   - Review the suggestions and use them to guide placement in the next step\n` +
-            `3. **Add elements directly into lanes**: Use \`add_bpmn_element\` with \`laneId\` to place ` +
-            `tasks, events, and gateways in the correct lane from the start:\n` +
-            `   - Use \`add_bpmn_element_chain\` with \`laneId\` for sequences within one lane\n` +
-            `   - Use \`add_bpmn_element\` with \`laneId\` for individual elements in different lanes\n` +
-            `   - Name every element with verb-object pattern (e.g. "Submit Order", "Process Payment")\n` +
-            `4. **Connect cross-lane flows**: Use \`connect_bpmn_elements\` for sequence flows ` +
-            `between elements in different lanes\n` +
-            `5. **Configure tasks**: Set \`camunda:candidateGroups\` on UserTasks ` +
-            `to match the lane role (e.g. tasks in "${roles[0]}" lane → ` +
-            `candidateGroups: "${roles[0].toLowerCase().replace(/\s+/g, '-')}")\n` +
-            `6. **Layout**: Run \`layout_bpmn_diagram\` to arrange elements within lanes\n` +
-            `7. **Validate**: Run \`validate_bpmn_diagram\` and fix any issues\n` +
-            `8. **Auto-size**: Run \`autosize_bpmn_pools_and_lanes\` to fit all lanes to their content\n\n` +
-            `**Best practices:**\n` +
-            `- Create the participant with lanes first, then add elements into lanes (avoids redistribute step)\n` +
-            `- **Never** use \`assign_bpmn_elements_to_lane\` to retroactively move already-connected elements.\n` +
-            `  This triggers \`unexpected dockingDirection\` crashes in ManhattanLayout.\n` +
-            `  Instead, always specify \`laneId\` when calling \`add_bpmn_element\` / \`add_bpmn_element_chain\`.\n` +
-            `- Keep related tasks in the same lane to minimise cross-lane sequence flows\n` +
-            `- Start events typically go in the lane of the initiating role\n` +
-            `- Use exclusive gateways when decisions are made by a specific role\n` +
-            `- Avoid putting the same role's tasks in multiple lanes\n` +
-            `- If you have > 5 lanes, consider decomposing into subprocesses`,
-        },
-      },
-    ];
-  },
-};
-
-// ── Subprocess pattern prompt ──────────────────────────────────────────────
-
-export const addSubprocessPattern: PromptDefinition = {
-  name: 'add-subprocess-pattern',
-  title: 'Add embedded subprocess',
-  description:
-    'Add an embedded (expanded) subprocess to group related activities, with optional ' +
-    'boundary events for error/timer handling. Covers both regular and event subprocesses.',
-  arguments: [
-    {
-      name: 'diagramId',
-      description: 'The diagram ID',
-      required: true,
-    },
-    {
-      name: 'afterElementId',
-      description: 'The ID of the element after which to insert the subprocess',
-      required: true,
-    },
-    {
-      name: 'subprocessName',
-      description: 'Name for the subprocess (e.g. "Process Payment", "Verify Identity")',
-      required: true,
-    },
-    {
-      name: 'steps',
-      description:
-        'Comma-separated list of steps inside the subprocess ' +
-        '(e.g. "Validate Card, Charge Amount, Send Receipt")',
-      required: false,
-    },
-  ],
-  getMessages: (args) => {
-    const diagramId = args.diagramId || DEFAULT_DIAGRAM_ID;
-    const afterId = args.afterElementId || DEFAULT_ELEMENT_ID;
-    const spName = args.subprocessName || 'My Subprocess';
-    const steps = args.steps
-      ? args.steps.split(',').map((s) => s.trim())
-      : ['Step 1', 'Step 2', 'Step 3'];
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Add an embedded subprocess called "${spName}" after element "${afterId}" ` +
-            `in diagram "${diagramId}" with steps: ${steps.join(', ')}.\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Add the subprocess**: Use \`add_bpmn_element\` with:\n` +
-            `   - elementType: "bpmn:SubProcess"\n` +
-            `   - name: "${spName}"\n` +
-            `   - afterElementId: "${afterId}"\n` +
-            `   - isExpanded: true\n` +
-            `2. **Add internal flow**: Inside the subprocess (use parentId = subprocess ID):\n` +
-            `   - Add a StartEvent\n` +
-            steps.map((s) => `   - Add a task named "${s}"\n`).join('') +
-            `   - Add an EndEvent\n` +
-            `   - Connect them in sequence with \`connect_bpmn_elements\`\n` +
-            `3. **Add boundary events** (optional):\n` +
-            `   - Timer: \`add_bpmn_element\` with elementType "bpmn:BoundaryEvent", ` +
-            `hostElementId = subprocess ID, eventDefinitionType "bpmn:TimerEventDefinition"\n` +
-            `   - Error: same but with "bpmn:ErrorEventDefinition" and an errorRef\n` +
-            `4. **Connect boundary paths**: Add tasks/end events for each boundary event path\n` +
-            `5. **Layout**: Run \`layout_bpmn_diagram\` to arrange the subprocess and its contents\n\n` +
-            `**Event subprocess variant** (for handling events anywhere in the parent scope):\n` +
-            `1. Add a \`bpmn:SubProcess\` with isExpanded: true\n` +
-            `2. Use \`set_bpmn_element_properties\` to set \`triggeredByEvent: true\`\n` +
-            `3. Add a StartEvent with the appropriate event definition (error, timer, message)\n` +
-            `4. Add handling tasks and an end event inside the event subprocess\n\n` +
-            `**Best practices:**\n` +
-            `- Use subprocesses to group 3-7 related activities\n` +
-            `- Name the subprocess with a verb-object pattern describing its purpose\n` +
-            `- Prefer expanded subprocesses for readability (collapsed for space)\n` +
-            `- Boundary events on subprocesses catch errors from ANY activity inside\n` +
-            `- Event subprocesses are triggered by events, not by the normal flow`,
-        },
-      },
-    ];
-  },
-};
-
-// ── Message exchange pattern prompt ────────────────────────────────────────
-
-export const addMessageExchangePattern: PromptDefinition = {
-  name: 'add-message-exchange-pattern',
-  title: 'Add message exchange between pools',
-  description:
-    'Create a collaboration diagram with message flows between participants (pools). ' +
-    'Models inter-organization or inter-system communication using BPMN message events.',
-  arguments: [
-    {
-      name: 'diagramId',
-      description: 'The diagram ID (or omit to create a new diagram)',
-      required: false,
-    },
-    {
-      name: 'processName',
-      description: 'Name for the main process (e.g. "Order Processing")',
-      required: true,
-    },
-    {
-      name: 'partnerName',
-      description: 'Name of the external partner or system (e.g. "Payment Provider", "Supplier")',
-      required: true,
-    },
-    {
-      name: 'messagePairs',
-      description:
-        'Semicolon-separated message pairs as "sender>receiver:message" ' +
-        '(e.g. "Order>Supplier:Purchase Order; Supplier>Order:Confirmation")',
-      required: false,
-    },
-  ],
-  getMessages: (args) => {
-    const diagramId = args.diagramId || DEFAULT_DIAGRAM_ID;
-    const processName = args.processName || 'My Process';
-    const partnerName = args.partnerName || 'External System';
-    const pairs = args.messagePairs
-      ? args.messagePairs.split(';').map((p) => p.trim())
-      : [`${processName}>${partnerName}:Request`, `${partnerName}>${processName}:Response`];
-    return [
-      {
-        role: 'user',
-        content: {
-          type: 'text',
-          text:
-            `Create a collaboration diagram for "${processName}" communicating with ` +
-            `"${partnerName}" via message flows` +
-            (args.diagramId ? ` in diagram "${diagramId}"` : '') +
-            `.\n\n` +
-            `Message exchanges: ${pairs.join('; ')}\n\n` +
-            `Follow these steps:\n\n` +
-            `1. **Create/prepare diagram**:\n` +
-            (args.diagramId
-              ? `   - Use existing diagram "${diagramId}"\n` +
-                `   - If it has existing elements, wrap them with ` +
-                `\`create_bpmn_participant\` (wrapExisting: true)\n`
-              : `   - Use \`create_bpmn_diagram\` with name "${processName}"\n`) +
-            `2. **Create collaboration**: Use \`create_bpmn_participant\` with participants:\n` +
-            `   - { name: "${processName}", collapsed: false } — the executable pool\n` +
-            `   - { name: "${partnerName}", collapsed: true } — partner pool (collapsed)\n` +
-            `   **Important:** In Camunda 7, only ONE pool is executable. Partner pools ` +
-            `must be collapsed (thin bars) as documentation endpoints.\n` +
-            `3. **Build the main process** inside the executable pool:\n` +
-            `   - Add StartEvent, tasks, gateways, EndEvent\n` +
-            `   - For sending messages: use \`bpmn:IntermediateThrowEvent\` or \`bpmn:SendTask\` ` +
-            `with a MessageEventDefinition\n` +
-            `   - For receiving messages: use \`bpmn:IntermediateCatchEvent\` or \`bpmn:ReceiveTask\` ` +
-            `with a MessageEventDefinition\n` +
-            `4. **Define messages**: Use \`manage_bpmn_root_elements\` to create shared ` +
-            `bpmn:Message definitions for each message type\n` +
-            `5. **Add message flows**: Use \`connect_bpmn_elements\` to draw message flows ` +
-            `between the executable pool's message events and the collapsed partner pool. ` +
-            `Message flows cross pool boundaries (auto-detected as bpmn:MessageFlow).\n` +
-            `6. **Layout**: Run \`layout_bpmn_diagram\` to arrange the collaboration\n\n` +
-            `**Best practices:**\n` +
-            `- Use collapsed pools for external partners — they are NOT executable\n` +
-            `- Never use sequence flows across pools — only message flows\n` +
-            `- Each message event should reference a bpmn:Message root element\n` +
-            `- For request-response patterns: throw event (send) → catch event (receive)\n` +
-            `- For simple external calls without explicit message exchange, prefer ` +
-            `ServiceTask with \`camunda:type="external"\` instead of message events\n` +
-            `- Name messages clearly (e.g. "Purchase Order", "Invoice", "Shipment Notification")`,
-        },
-      },
-    ];
-  },
-};
 /** Additional prompts defined in this module. */
 export const ADDITIONAL_PROMPTS: PromptDefinition[] = [
-  addErrorHandlingPattern,
-  addParallelTasksPattern,
-  addDecisionGatewayPattern,
-  createLaneBasedProcess,
-  addSubprocessPattern,
-  addMessageExchangePattern,
+  // ── create-executable-process ────────────────────────────────────────────
+  {
+    name: 'create-executable-process',
+    title: 'Create an executable Camunda 7 process from scratch',
+    description:
+      'Guided workflow to build a named, deployable Camunda 7 / Operaton process ' +
+      'with properly configured tasks, gateways, and events.',
+    arguments: [
+      {
+        name: 'processName',
+        description: 'Name for the new process (e.g. "Order Processing")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const processName = arg(args, 'processName', 'My Process');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Create an executable BPMN process named **"${processName}"** for ` +
+              `Operaton / Camunda 7.\n\n` +
+              `**Steps:**\n` +
+              `1. \`create_bpmn_diagram\` — creates a blank diagram with an executable process.\n` +
+              `2. Add a StartEvent, tasks, gateways, and an EndEvent using ` +
+              `\`add_bpmn_element\` or \`add_bpmn_element_chain\`.\n` +
+              `3. Connect elements with \`connect_bpmn_elements\`. ` +
+              `Set \`conditionExpression\` on gateway branches and mark one as ` +
+              `\`isDefault: true\`.\n` +
+              `4. Configure each task type:\n` +
+              `   - UserTask → \`camunda:assignee\` or \`camunda:candidateGroups\` + \`set_bpmn_form_data\`\n` +
+              `   - ServiceTask → \`camunda:type: "external"\`, \`camunda:topic\`\n` +
+              `   - BusinessRuleTask → \`camunda:decisionRef\`\n` +
+              `5. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `6. \`validate_bpmn_diagram\` and fix any issues.\n` +
+              `7. \`export_bpmn\` with \`format: "both"\` and a \`filePath\` to save.\n\n` +
+              `Process name: **${processName}**`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── convert-to-collaboration ─────────────────────────────────────────────
+  {
+    name: 'convert-to-collaboration',
+    title: 'Convert a flat process into a collaboration with partner pools',
+    description:
+      'Wraps an existing flat process in a participant pool and adds collapsed ' +
+      'partner pools for external systems or organisations.',
+    arguments: [
+      { name: 'diagramId', description: 'ID of the diagram to convert', required: true },
+      {
+        name: 'partners',
+        description:
+          'Comma-separated list of external partner names (e.g. "Customer, Payment Gateway")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const partners = arg(args, 'partners', 'Partner');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Convert diagram \`${diagramId}\` into a collaboration.\n\n` +
+              `**Steps:**\n` +
+              `1. Use \`create_bpmn_participant\` with \`wrapExisting: true\` to wrap the ` +
+              `existing process in an expanded pool.\n` +
+              `2. Add collapsed partner pools for each external party: **${partners}**.\n` +
+              `   Pass them in the \`additionalParticipants\` array with \`collapsed: true\`.\n` +
+              `3. Draw message flows between the main pool's tasks and the collapsed pools ` +
+              `using \`connect_bpmn_elements\` (cross-pool connections auto-create message flows).\n` +
+              `4. Optionally use \`manage_bpmn_root_elements\` to define named \`bpmn:Message\` ` +
+              `elements referenced by the event definitions.\n` +
+              `5. \`layout_bpmn_diagram\` → \`autosize_bpmn_pools_and_lanes\`.\n` +
+              `6. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Diagram: \`${diagramId}\` | Partners: ${partners}`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-sla-timer-pattern ────────────────────────────────────────────────
+  {
+    name: 'add-sla-timer-pattern',
+    title: 'Add an SLA boundary timer to a task',
+    description:
+      'Attaches a non-interrupting timer boundary event to a task to trigger ' +
+      'an escalation path when the SLA duration elapses.',
+    arguments: [
+      ARG_DIAGRAM_ID,
+      {
+        name: 'targetElementId',
+        description: 'ID of the task to attach the timer to',
+        required: true,
+      },
+      {
+        name: 'duration',
+        description: 'ISO 8601 duration (e.g. "PT2H" for 2 hours, "P1D" for 1 day)',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const targetElementId = arg(args, 'targetElementId', DEFAULT_ELEMENT_ID);
+      const duration = arg(args, 'duration', 'PT1H');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Add an SLA timer boundary event to task \`${targetElementId}\` in diagram \`${diagramId}\`.\n\n` +
+              `**Steps:**\n` +
+              `1. Add a \`bpmn:BoundaryEvent\` with \`hostElementId: "${targetElementId}"\` and ` +
+              `\`eventDefinitionType: "bpmn:TimerEventDefinition"\`.\n` +
+              `   Set \`cancelActivity: false\` for a **non-interrupting** timer (escalation path ` +
+              `runs in parallel — the original task continues).\n` +
+              `2. Set the timer duration using \`set_bpmn_event_definition\` with ` +
+              `\`timeDuration: "${duration}"\` (ISO 8601 — ${duration}).\n` +
+              `3. Add an escalation task after the boundary event (e.g. "Escalate to Manager") ` +
+              `and connect with \`connect_bpmn_elements\`.\n` +
+              `4. Connect the escalation task to an intermediate or end event.\n` +
+              `5. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `6. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Target: \`${targetElementId}\` | Duration: **${duration}**`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-approval-pattern ─────────────────────────────────────────────────
+  {
+    name: 'add-approval-pattern',
+    title: 'Insert an approval gateway after a task',
+    description:
+      'Adds an exclusive approval gateway with Approved/Rejected branches after ' +
+      'a specified element, routing the reject branch back or to an end.',
+    arguments: [
+      ARG_DIAGRAM_ID,
+      {
+        name: 'afterElementId',
+        description: 'ID of the element to insert the approval after',
+        required: true,
+      },
+      {
+        name: 'approverGroup',
+        description: 'candidateGroups value for the approval UserTask (e.g. "managers")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const afterElementId = arg(args, 'afterElementId', DEFAULT_ELEMENT_ID);
+      const approverGroup = arg(args, 'approverGroup', 'approvers');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Add an approval gateway pattern after \`${afterElementId}\` in diagram \`${diagramId}\`.\n\n` +
+              `**Steps:**\n` +
+              `1. Add a \`bpmn:UserTask\` named "Review & Approve" after \`${afterElementId}\` ` +
+              `using \`afterElementId\`.\n` +
+              `   Set \`camunda:candidateGroups: "${approverGroup}"\` on it.\n` +
+              `2. Add an \`bpmn:ExclusiveGateway\` named "Approved?" after the UserTask.\n` +
+              `3. Add an "Approved" branch: connect the gateway to the next process step ` +
+              `with \`conditionExpression: "\${approved == true}"\`.\n` +
+              `4. Add a "Rejected" branch: connect the gateway to a "Handle Rejection" task ` +
+              `with \`conditionExpression: "\${approved == false}"\`. ` +
+              `Mark the approved path as \`isDefault: true\`.\n` +
+              `5. Connect "Handle Rejection" to an EndEvent (or loop back if re-submission is allowed).\n` +
+              `6. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `7. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Insert after: \`${afterElementId}\` | Approver group: **${approverGroup}**`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-error-handling-pattern ───────────────────────────────────────────
+  {
+    name: 'add-error-handling-pattern',
+    title: 'Add error boundary event to a service task',
+    description:
+      'Attaches an interrupting error BoundaryEvent to a ServiceTask and routes ' +
+      'the error path to a compensation or notification task.',
+    arguments: [
+      ARG_DIAGRAM_ID,
+      {
+        name: 'targetElementId',
+        description: 'ID of the ServiceTask to attach error handling to',
+        required: true,
+      },
+      {
+        name: 'errorCode',
+        description: 'Error code to catch (e.g. "PAYMENT_FAILED")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const targetElementId = arg(args, 'targetElementId', DEFAULT_ELEMENT_ID);
+      const errorCode = arg(args, 'errorCode', 'SERVICE_ERROR');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Add error handling to task \`${targetElementId}\` in diagram \`${diagramId}\`.\n\n` +
+              `**Steps:**\n` +
+              `1. Add a \`bpmn:BoundaryEvent\` with \`hostElementId: "${targetElementId}"\` ` +
+              `and \`eventDefinitionType: "bpmn:ErrorEventDefinition"\`.\n` +
+              `   Leave \`cancelActivity\` at its default (\`true\`) — an error BoundaryEvent ` +
+              `is always interrupting.\n` +
+              `2. Use \`set_bpmn_event_definition\` to configure the ErrorEventDefinition with ` +
+              `\`errorRef: { id: "Error_${errorCode}", errorCode: "${errorCode}" }\`.\n` +
+              `3. Add a compensation or notification task after the BoundaryEvent ` +
+              `(e.g. "Handle ${errorCode} Error") and connect it.\n` +
+              `4. End the error path with an EndEvent (optionally a terminating end event ` +
+              `to stop the entire process on error).\n` +
+              `5. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `6. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Target: \`${targetElementId}\` | ErrorEventDefinition code: **${errorCode}** | BoundaryEvent type: interrupting`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-parallel-tasks-pattern ───────────────────────────────────────────
+  {
+    name: 'add-parallel-tasks-pattern',
+    title: 'Insert parallel branches after an element',
+    description:
+      'Adds a parallel split gateway, one task per branch, and a parallel join ' +
+      'gateway that re-converges the flow.',
+    arguments: [
+      ARG_DIAGRAM_ID,
+      {
+        name: 'afterElementId',
+        description: 'ID of the element to insert the parallel split after',
+        required: true,
+      },
+      {
+        name: 'branches',
+        description:
+          'Comma-separated task names for each parallel branch (e.g. "Check Stock, Process Payment, Send Email")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const afterElementId = arg(args, 'afterElementId', DEFAULT_ELEMENT_ID);
+      const branches = arg(args, 'branches', 'Task A, Task B');
+      const branchList = branches
+        .split(',')
+        .map((b) => b.trim())
+        .filter(Boolean);
+      const branchBullets = branchList
+        .map((b) => `   - Add \`bpmn:Task\` named "${b}" and connect from the split gateway.`)
+        .join('\n');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Add parallel branches after \`${afterElementId}\` in diagram \`${diagramId}\`.\n\n` +
+              `**Branches:** ${branches}\n\n` +
+              `**Steps:**\n` +
+              `1. Add a \`bpmn:ParallelGateway\` named "Split" after \`${afterElementId}\`.\n` +
+              `2. Add one task per branch and connect each from the ParallelGateway (split):\n` +
+              `${branchBullets}\n` +
+              `3. Add another \`bpmn:ParallelGateway\` named "Join" (the synchronising join).\n` +
+              `4. Connect each branch task to the join ParallelGateway.\n` +
+              `5. Connect the join gateway to the next step in the process.\n` +
+              `6. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `7. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Insert after: \`${afterElementId}\` | Branches: ${branches}`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── create-lane-based-process ────────────────────────────────────────────
+  {
+    name: 'create-lane-based-process',
+    title: 'Create a process with swimlanes for role separation',
+    description:
+      'Builds a new executable process inside a single participant pool with ' +
+      'swimlanes, one per role, and places tasks in the correct lane.',
+    arguments: [
+      { name: 'processName', description: 'Name for the process', required: false },
+      {
+        name: 'roles',
+        description:
+          'Comma-separated list of role/lane names (e.g. "Customer Service, Technical Support, Management")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const processName = arg(args, 'processName', 'My Process');
+      const roles = arg(args, 'roles', 'Role A, Role B');
+      const roleList = roles
+        .split(',')
+        .map((r) => r.trim())
+        .filter(Boolean);
+      const laneJson = JSON.stringify(roleList.map((name) => ({ name })));
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Create a lane-based BPMN process named **"${processName}"** with these roles/lanes: **${roles}**.\n\n` +
+              `**Steps:**\n` +
+              `1. \`create_bpmn_diagram\` to create a blank diagram.\n` +
+              `2. \`create_bpmn_participant\` with \`name: "${processName}"\` and ` +
+              `\`lanes: ${laneJson}\` — this creates the pool and all lanes in one call.\n` +
+              `3. For each lane, add the relevant tasks using \`add_bpmn_element\` with ` +
+              `both \`participantId\` and \`laneId\` specified. ` +
+              `This keeps tasks in their correct swimlane.\n` +
+              `4. Connect tasks across lanes using \`connect_bpmn_elements\`. ` +
+              `Use \`handoff_bpmn_to_lane\` for quick cross-lane handoffs.\n` +
+              `5. Configure each task: UserTasks in human lanes should have ` +
+              `\`camunda:candidateGroups\` matching the lane name.\n` +
+              `6. \`layout_bpmn_diagram\` → \`autosize_bpmn_pools_and_lanes\` to size the pool.\n` +
+              `7. \`validate_bpmn_diagram\` and fix issues.\n` +
+              `8. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `**Key parameters:** always specify \`laneId\` when calling \`add_bpmn_element\` inside a pool with lanes.`,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-subprocess-pattern ───────────────────────────────────────────────
+  {
+    name: 'add-subprocess-pattern',
+    title: 'Insert an expanded subprocess with internal steps',
+    description:
+      'Adds an expanded inline subprocess after a specified element, ' +
+      'populates it with named steps, and reconnects the outer flow.',
+    arguments: [
+      ARG_DIAGRAM_ID,
+      {
+        name: 'afterElementId',
+        description: 'ID of the element to insert the subprocess after',
+        required: true,
+      },
+      {
+        name: 'subprocessName',
+        description: 'Name for the subprocess (e.g. "Process Payment")',
+        required: false,
+      },
+      {
+        name: 'steps',
+        description:
+          'Comma-separated internal step names (e.g. "Validate Card, Charge Amount, Send Receipt")',
+        required: false,
+      },
+    ],
+    getMessages: (args) => {
+      const diagramId = arg(args, 'diagramId', DEFAULT_DIAGRAM_ID);
+      const afterElementId = arg(args, 'afterElementId', DEFAULT_ELEMENT_ID);
+      const subprocessName = arg(args, 'subprocessName', 'Sub-Process');
+      const steps = arg(args, 'steps', 'Step A, Step B');
+      const stepList = steps
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const stepBullets = stepList
+        .map((s) => `   - \`add_bpmn_element\` bpmn:Task "${s}" with \`parentId\` = subprocess ID.`)
+        .join('\n');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Add an expanded SubProcess named **"${subprocessName}"** after \`${afterElementId}\` ` +
+              `in diagram \`${diagramId}\`.\n\n` +
+              `**Internal steps:** ${steps}\n\n` +
+              `**Steps:**\n` +
+              `1. Add a \`bpmn:SubProcess\` with \`isExpanded: true\` after \`${afterElementId}\`.\n` +
+              `   This creates an inline expanded subprocess on the same plane.\n` +
+              `2. Note the returned subprocess element ID. Add internal elements using ` +
+              `\`parentId\` = subprocess ID:\n` +
+              `   - Add a StartEvent inside the SubProcess.\n` +
+              `${stepBullets}\n` +
+              `   - Add an EndEvent inside the SubProcess.\n` +
+              `3. Connect the internal elements with \`connect_bpmn_elements\`.\n` +
+              `4. The outer flow is auto-connected via \`afterElementId\`. ` +
+              `If needed, reconnect the next outer element to the SubProcess.\n` +
+              `5. \`layout_bpmn_diagram\` to tidy up.\n` +
+              `6. \`export_bpmn\` with \`format: "both"\` and a \`filePath\`.\n\n` +
+              `Subprocess: **${subprocessName}** | isExpanded: true | Insert after: \`${afterElementId}\``,
+          },
+        },
+      ];
+    },
+  },
+
+  // ── add-message-exchange-pattern ─────────────────────────────────────────
+  {
+    name: 'add-message-exchange-pattern',
+    title: 'Create a message exchange collaboration between two systems',
+    description:
+      'Builds a collaboration with one executable process pool and one collapsed ' +
+      'partner pool, connected via message flows.',
+    arguments: [
+      {
+        name: 'processName',
+        description: 'Name of the main (executable) process',
+        required: false,
+      },
+      { name: 'partnerName', description: 'Name of the external partner system', required: false },
+    ],
+    getMessages: (args) => {
+      const processName = arg(args, 'processName', 'Main Process');
+      const partnerName = arg(args, 'partnerName', 'External System');
+      return [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Create a message exchange collaboration between **"${processName}"** and ` +
+              `**"${partnerName}"**.\n\n` +
+              `**Steps:**\n` +
+              `1. \`create_bpmn_diagram\` with \`workflowContext: "multi-system"\`.\n` +
+              `2. \`create_bpmn_participant\` with a \`participants\` array:\n` +
+              `   - \`{ name: "${processName}" }\` — expanded (executable) pool.\n` +
+              `   - \`{ name: "${partnerName}", collapsed: true }\` — collapsed partner pool ` +
+              `(external system, documentation only).\n` +
+              `3. Build the internal flow of "${processName}" with tasks and events.\n` +
+              `4. Add message send/receive events or Send/Receive tasks at the integration points.\n` +
+              `5. Connect elements in "${processName}" to the collapsed "${partnerName}" pool ` +
+              `using \`connect_bpmn_elements\` — this auto-creates **message flows** between pools.\n` +
+              `6. Optionally define named bpmn:Message root elements with \`manage_bpmn_root_elements\` ` +
+              `and reference them in the event definitions.\n` +
+              `7. \`layout_bpmn_diagram\` → \`autosize_bpmn_pools_and_lanes\`.\n` +
+              `8. \`export_bpmn\` with \`format: "both"\`, \`skipLint: true\`, and a \`filePath\`.\n\n` +
+              `Process: **${processName}** | Partner: **${partnerName}** (collapsed) | ` +
+              `Connection type: message flows`,
+          },
+        },
+      ];
+    },
+  },
 ];

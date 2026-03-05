@@ -1,256 +1,159 @@
 /**
- * MCP Prompts — reusable modeling workflows and recipes.
+ * MCP Prompts — modeling style toggles.
  *
- * Provides step-by-step instructions for common BPMN modeling patterns.
- * These prompts guide AI callers through multi-tool workflows, reducing
- * improvisation and ensuring correct BPMN semantics.
+ * Three prompts that set the modeling context for the agent session.
+ * Each instructs the agent on which BPMN structure to use, which tools
+ * to call, and reminds it to export the final diagram via export_bpmn.
  */
 
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { type PromptDefinition, ADDITIONAL_PROMPTS } from './prompt-definitions';
 
+// ── Shared export reminder ─────────────────────────────────────────────────
+
+const EXPORT_REMINDER =
+  `\n\n**Export:** When the diagram is complete, always run ` +
+  `\`export_bpmn\` with \`format: "both"\` and a \`filePath\` argument to ` +
+  `save the BPMN XML to disk. This ensures the work is persisted.\n` +
+  `Example: \`export_bpmn({ diagramId, format: "both", filePath: "output/my-process.bpmn" })\``;
+
+// ── Prompt definitions ─────────────────────────────────────────────────────
+
 const PROMPTS: PromptDefinition[] = [
   {
-    name: 'create-executable-process',
-    title: 'Create executable Operaton / Camunda 7 process',
+    name: 'executable',
+    title: 'Executable BPMN process (no pool)',
     description:
-      'Step-by-step guide to create a complete executable BPMN process for Operaton / Camunda 7: ' +
-      'diagram creation, start event, user/service tasks with forms and external topics, ' +
-      'gateways with conditions, and end event.',
-    arguments: [
+      'Model an executable Operaton / Camunda 7 process as a flat process without ' +
+      'a participant pool. Suitable for simple deployable workflows.',
+    arguments: [],
+    getMessages: () => [
       {
-        name: 'processName',
-        description: 'Name for the process (e.g. "Order Processing")',
-        required: true,
-      },
-      {
-        name: 'description',
-        description:
-          'Brief description of what the process should do (e.g. "Handle incoming orders with approval")',
-        required: false,
+        role: 'user',
+        content: {
+          type: 'text',
+          text:
+            `You are now modeling an **executable BPMN process without a pool** ` +
+            `for Operaton / Camunda 7.\n\n` +
+            `**Structure rules:**\n` +
+            `- Do NOT create any participant pools — model a flat process.\n` +
+            `- The process must be executable: set \`isExecutable: true\` on the process ` +
+            `(this is the default for \`create_bpmn_diagram\`).\n` +
+            `- Use \`create_bpmn_diagram\` to start, then \`add_bpmn_element\` / ` +
+            `\`add_bpmn_element_chain\` / \`connect_bpmn_elements\` to build the flow.\n\n` +
+            `**Task configuration (make it deployable):**\n` +
+            `- UserTasks: set \`camunda:assignee\` or \`camunda:candidateGroups\`. ` +
+            `Add form fields with \`set_bpmn_form_data\` or set \`camunda:formRef\`.\n` +
+            `- ServiceTasks: set \`camunda:type\` to "external" and \`camunda:topic\` ` +
+            `for external task workers.\n` +
+            `- BusinessRuleTasks: set \`camunda:decisionRef\` to a DMN decision table ID.\n` +
+            `- Gateways: always set condition expressions on outgoing flows and mark ` +
+            `one flow as the default with \`isDefault: true\`.\n\n` +
+            `**Workflow:**\n` +
+            `1. \`create_bpmn_diagram\` → build flow → configure tasks\n` +
+            `2. \`layout_bpmn_diagram\` to arrange elements\n` +
+            `3. \`validate_bpmn_diagram\` to check for issues\n` +
+            `4. Fix any reported issues\n` +
+            `5. \`export_bpmn\` with \`filePath\` to save` +
+            EXPORT_REMINDER,
+        },
       },
     ],
-    getMessages: (args) => {
-      const name = args.processName || 'My Process';
-      const desc = args.description ? `\n\nProcess description: ${args.description}` : '';
-      return [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text:
-              `Create an executable Operaton / Camunda 7 BPMN process called "${name}".${desc}\n\n` +
-              `Follow these steps:\n\n` +
-              `1. **Create diagram**: Use \`create_bpmn_diagram\` with name "${name}"\n` +
-              `2. **Add start event**: Use \`add_bpmn_element\` with elementType "bpmn:StartEvent"\n` +
-              `3. **Model the happy path**: Add tasks (UserTask for human work, ServiceTask for ` +
-              `system integration) connected in sequence. Name every element with verb-object ` +
-              `pattern (e.g. "Review Order", "Send Confirmation").\n` +
-              `4. **Add decision points**: Use ExclusiveGateway for decisions. Name with a question ` +
-              `(e.g. "Order valid?"). Set conditions on outgoing flows and mark one as default.\n` +
-              `5. **Add end event**: Use \`add_bpmn_element\` with elementType "bpmn:EndEvent"\n` +
-              `6. **Configure tasks**:\n` +
-              `   - UserTasks: Set \`camunda:assignee\` or \`camunda:candidateGroups\`. For forms,\n` +
-              `     use \`set_bpmn_form_data\` (generated fields, good for prototyping) or\n` +
-              `     \`camunda:formRef\` (Camunda Platform Form deployed separately)\n` +
-              `   - ServiceTasks: Set \`camunda:type\` to "external" and \`camunda:topic\` for ` +
-              `external task workers\n` +
-              `   - BusinessRuleTasks: Set \`camunda:decisionRef\` to a DMN decision table ID, ` +
-              `with \`camunda:decisionRefBinding\` and \`camunda:mapDecisionResult\`\n` +
-              `7. **Add exception handling**: Add boundary timer/error events where appropriate\n` +
-              `8. **Layout**: Run \`layout_bpmn_diagram\` for clean arrangement\n` +
-              `9. **Validate**: Run \`validate_bpmn_diagram\` and fix any issues\n` +
-              `10. **Export**: Use \`export_bpmn\` with a \`filePath\` to save the final BPMN XML to disk`,
-          },
-        },
-      ];
-    },
   },
   {
-    name: 'convert-to-collaboration',
-    title: 'Convert process to collaboration',
+    name: 'executable-pool',
+    title: 'Executable BPMN process with pool',
     description:
-      'Step-by-step guide to convert a single-pool BPMN process into a collaboration diagram ' +
-      'with multiple participants. Follows the Operaton / Camunda 7 pattern: one executable pool + ' +
-      'collapsed partner pools for external systems.',
-    arguments: [
+      'Model an executable Operaton / Camunda 7 process wrapped in a participant ' +
+      'pool, optionally with swim lanes for role separation and collapsed partner ' +
+      'pools for external system documentation.',
+    arguments: [],
+    getMessages: () => [
       {
-        name: 'diagramId',
-        description: 'The ID of the existing diagram to convert',
-        required: true,
-      },
-      {
-        name: 'partners',
-        description:
-          'Comma-separated list of external partners/systems (e.g. "Customer, Payment Gateway")',
-        required: true,
+        role: 'user',
+        content: {
+          type: 'text',
+          text:
+            `You are now modeling an **executable BPMN process with a participant pool** ` +
+            `for Operaton / Camunda 7.\n\n` +
+            `**Structure rules:**\n` +
+            `- Create ONE expanded participant pool for the executable process using ` +
+            `\`create_bpmn_participant\`.\n` +
+            `- Optionally add **lanes** for role separation: pass a \`lanes\` array to ` +
+            `\`create_bpmn_participant\` (e.g. \`lanes: [{ name: "Manager" }, { name: "Clerk" }]\`).\n` +
+            `- When placing elements, always specify \`participantId\` (and \`laneId\` if ` +
+            `using lanes) in \`add_bpmn_element\` / \`add_bpmn_element_chain\`.\n` +
+            `- Optionally add **collapsed partner pools** for external systems: use ` +
+            `\`create_bpmn_participant\` with \`participants\` array where partner entries ` +
+            `have \`collapsed: true\`. Connect via \`connect_bpmn_elements\` (auto-creates ` +
+            `message flows across pools).\n` +
+            `- **Only ONE pool is executable** in Camunda 7 — partner pools are for ` +
+            `documentation only.\n\n` +
+            `**Task configuration (make it deployable):**\n` +
+            `- UserTasks: set \`camunda:assignee\` or \`camunda:candidateGroups\`. ` +
+            `Match the lane role (e.g. lane "Manager" → candidateGroups: "managers").\n` +
+            `- ServiceTasks: set \`camunda:type\` to "external" and \`camunda:topic\`.\n` +
+            `- Gateways: always set condition expressions and a default flow.\n\n` +
+            `**Workflow:**\n` +
+            `1. \`create_bpmn_diagram\` → \`create_bpmn_participant\` (with optional lanes)\n` +
+            `2. Build flow with \`add_bpmn_element\` (specify participantId/laneId)\n` +
+            `3. \`layout_bpmn_diagram\` → \`autosize_bpmn_pools_and_lanes\`\n` +
+            `4. \`validate_bpmn_diagram\` → fix issues\n` +
+            `5. \`export_bpmn\` with \`filePath\` to save` +
+            EXPORT_REMINDER,
+        },
       },
     ],
-    getMessages: (args) => {
-      const diagramId = args.diagramId || '<diagramId>';
-      const partners = args.partners || 'External System';
-      return [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text:
-              `Convert diagram "${diagramId}" into a collaboration with these partners: ${partners}\n\n` +
-              `**Important Operaton / Camunda 7 rules:**\n` +
-              `- Only ONE pool can be deployed and executed\n` +
-              `- Partner pools must be COLLAPSED (thin bars)\n` +
-              `- Use message flows between expanded pool elements and collapsed pools\n\n` +
-              `Follow these steps:\n\n` +
-              `1. **Review current state**: Use \`list_bpmn_diagrams\` with diagramId "${diagramId}" ` +
-              `to understand the existing process structure.\n` +
-              `2. **Create collaboration**: Use \`create_bpmn_participant\` with participants array:\n` +
-              `   - First participant: the existing process name (expanded, executable)\n` +
-              `   - Additional participants: ${partners} (each with \`collapsed: true\`)\n` +
-              `3. **Recreate the process**: Add all elements from the original process into the ` +
-              `expanded pool using \`participantId\`. Preserve the original flow structure.\n` +
-              `4. **Add message flows**: Use \`connect_bpmn_elements\` to create message flows ` +
-              `between elements in the expanded pool and collapsed partner pools. Message flows ` +
-              `represent communication between participants.\n` +
-              `5. **Layout**: Run \`layout_bpmn_diagram\` to arrange everything cleanly.\n` +
-              `6. **Validate**: Run \`validate_bpmn_diagram\` and fix any issues.\n\n` +
-              `**Do NOT:**\n` +
-              `- Create multiple expanded pools (only one is executable in Operaton / Camunda 7)\n` +
-              `- Duplicate flow nodes across pools\n` +
-              `- Use sequence flows between pools (use message flows instead)`,
-          },
-        },
-      ];
-    },
   },
   {
-    name: 'add-sla-timer-pattern',
-    title: 'Add SLA timer pattern',
+    name: 'collaboration',
+    title: 'Collaboration diagram (documentation)',
     description:
-      'Add an SLA timer to a task or subprocess using either a boundary timer event ' +
-      '(interrupting or non-interrupting) or a timer event subprocess. Includes escalation handling.',
-    arguments: [
+      'Model a non-executable collaboration diagram for documentation purposes. ' +
+      'Multiple expanded pools show how different organisations or systems interact ' +
+      'via message flows. Not intended for engine deployment.',
+    arguments: [],
+    getMessages: () => [
       {
-        name: 'diagramId',
-        description: 'The diagram ID',
-        required: true,
-      },
-      {
-        name: 'targetElementId',
-        description: 'The ID of the task or subprocess to add the SLA timer to',
-        required: true,
-      },
-      {
-        name: 'duration',
-        description: 'ISO 8601 duration for the SLA (e.g. "PT4H" for 4 hours, "P2D" for 2 days)',
-        required: true,
-      },
-      {
-        name: 'interrupting',
-        description: 'Whether the timer should interrupt the task ("true" or "false")',
-        required: false,
+        role: 'user',
+        content: {
+          type: 'text',
+          text:
+            `You are now modeling a **collaboration diagram for documentation**. ` +
+            `This diagram is NOT intended for execution — it documents how multiple ` +
+            `organisations or systems interact.\n\n` +
+            `**Structure rules:**\n` +
+            `- Create **multiple expanded participant pools** using ` +
+            `\`create_bpmn_participant\` with a \`participants\` array (each with ` +
+            `\`collapsed: false\`).\n` +
+            `- Each pool represents a separate organisation, department, or system.\n` +
+            `- Use **sequence flows** within a pool and **message flows** between pools.\n` +
+            `- Message flows are auto-detected by \`connect_bpmn_elements\` when source ` +
+            `and target are in different pools.\n` +
+            `- Pools may have **lanes** for internal role separation.\n\n` +
+            `**Modeling guidelines (documentation focus):**\n` +
+            `- Use descriptive names: verb-object for tasks ("Send Invoice"), ` +
+            `questions for gateways ("Payment received?").\n` +
+            `- Camunda-specific properties (assignee, topic, forms) are optional — ` +
+            `this is for human-readable documentation.\n` +
+            `- Use \`manage_bpmn_root_elements\` to define shared bpmn:Message elements ` +
+            `for cross-pool communication.\n` +
+            `- Add text annotations (\`bpmn:TextAnnotation\`) to clarify non-obvious ` +
+            `interactions.\n` +
+            `- Use SendTask/ReceiveTask or message throw/catch events to make ` +
+            `cross-pool communication explicit.\n\n` +
+            `**Workflow:**\n` +
+            `1. \`create_bpmn_diagram\` with \`workflowContext: "multi-organization"\`\n` +
+            `2. \`create_bpmn_participant\` with multiple expanded pools\n` +
+            `3. Build each pool's internal flow independently\n` +
+            `4. \`connect_bpmn_elements\` for message flows between pools\n` +
+            `5. \`layout_bpmn_diagram\` → \`autosize_bpmn_pools_and_lanes\`\n` +
+            `6. \`export_bpmn\` with \`filePath\` and \`skipLint: true\` to save ` +
+            `(non-executable diagrams may trigger lint warnings)` +
+            EXPORT_REMINDER,
+        },
       },
     ],
-    getMessages: (args) => {
-      const diagramId = args.diagramId || '<diagramId>';
-      const targetId = args.targetElementId || '<elementId>';
-      const duration = args.duration || 'PT4H';
-      const interrupting = args.interrupting !== 'false';
-      return [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text:
-              `Add an SLA timer to element "${targetId}" in diagram "${diagramId}" ` +
-              `with duration ${duration} (${interrupting ? 'interrupting' : 'non-interrupting'}).\n\n` +
-              `Follow these steps:\n\n` +
-              `1. **Add boundary timer event**: Use \`add_bpmn_element\` with:\n` +
-              `   - elementType: "bpmn:BoundaryEvent"\n` +
-              `   - hostElementId: "${targetId}"\n` +
-              `   - eventDefinitionType: "bpmn:TimerEventDefinition"\n` +
-              `   - eventDefinitionProperties: { timeDuration: "${duration}" }\n` +
-              `   - name: "SLA exceeded"\n` +
-              `   ${!interrupting ? '- Then use set_bpmn_element_properties to set cancelActivity: false for non-interrupting\n' : ''}\n` +
-              `2. **Add escalation handling**: After the boundary event, add the escalation path:\n` +
-              `   - For simple notification: add a SendTask or ServiceTask ("Notify SLA breach")\n` +
-              `   - For escalation: add a UserTask assigned to a manager ("Handle SLA escalation")\n` +
-              `3. **Connect and end**: Connect the escalation path to an EndEvent\n` +
-              `4. **Layout**: Run \`layout_bpmn_diagram\` to arrange the new elements\n\n` +
-              `**When to use non-interrupting:** The main task continues even after the SLA is breached ` +
-              `(e.g., send a reminder but let the user finish). Use interrupting when the task should ` +
-              `be cancelled on SLA breach.`,
-          },
-        },
-      ];
-    },
-  },
-  {
-    name: 'add-approval-pattern',
-    title: 'Add approval with default flow and conditions',
-    description:
-      'Add an approval pattern with a user task, exclusive gateway, and conditional flows. ' +
-      'Includes proper default flow, condition expressions, and form fields.',
-    arguments: [
-      {
-        name: 'diagramId',
-        description: 'The diagram ID',
-        required: true,
-      },
-      {
-        name: 'afterElementId',
-        description: 'The ID of the element after which to add the approval pattern',
-        required: true,
-      },
-      {
-        name: 'approverGroup',
-        description: 'The candidate group for the approval task (e.g. "managers")',
-        required: false,
-      },
-    ],
-    getMessages: (args) => {
-      const diagramId = args.diagramId || '<diagramId>';
-      const afterId = args.afterElementId || '<afterElementId>';
-      const group = args.approverGroup || 'approvers';
-      return [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text:
-              `Add an approval pattern after element "${afterId}" in diagram "${diagramId}".\n\n` +
-              `Follow these steps:\n\n` +
-              `1. **Add approval user task**: Use \`add_bpmn_element\` with:\n` +
-              `   - elementType: "bpmn:UserTask"\n` +
-              `   - name: "Review and Approve"\n` +
-              `   - afterElementId: "${afterId}"\n` +
-              `2. **Configure the task**:\n` +
-              `   - Set \`camunda:candidateGroups\` to "${group}"\n` +
-              `   - Add form fields with \`set_bpmn_form_data\` (for prototyping) or use\n` +
-              `     \`camunda:formRef\` (for a Camunda Platform Form deployed separately):\n` +
-              `     - "approved" (boolean): "Approved?"\n` +
-              `     - "comment" (string): "Comments"\n` +
-              `3. **Add gateway**: Use \`add_bpmn_element\` with:\n` +
-              `   - elementType: "bpmn:ExclusiveGateway"\n` +
-              `   - name: "Approved?"\n` +
-              `   - afterElementId: the approval task ID\n` +
-              `4. **Add approved path**: Connect the gateway to the next step in the happy path ` +
-              `with conditionExpression: '\${approved == true}' and label: "Yes"\n` +
-              `5. **Add rejected path**: Add a new branch from the gateway with:\n` +
-              `   - conditionExpression: '\${approved == false}'\n` +
-              `   - label: "No"\n` +
-              `   - Connect to a rejection handling task or end event\n` +
-              `6. **Set default flow**: Use \`connect_bpmn_elements\` with isDefault: true for ` +
-              `the approved path (or whichever should be the fallback)\n` +
-              `7. **Layout**: Run \`layout_bpmn_diagram\` to arrange the pattern\n\n` +
-              `**Best practices:**\n` +
-              `- Always set conditions on outgoing gateway flows\n` +
-              `- Always mark one flow as the default (taken when no condition matches)\n` +
-              `- Name the gateway as a question ("Approved?")\n` +
-              `- Label outgoing flows as answers ("Yes", "No")`,
-          },
-        },
-      ];
-    },
   },
   ...ADDITIONAL_PROMPTS,
 ];

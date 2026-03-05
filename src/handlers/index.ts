@@ -21,7 +21,7 @@ import { ERR_INTERNAL } from '../errors';
 
 import { handleCreateDiagram, TOOL_DEFINITION as CREATE_DIAGRAM_DEF } from './core/create-diagram';
 import { handleDeleteDiagram, TOOL_DEFINITION as DELETE_DIAGRAM_DEF } from './core/delete-diagram';
-import { handleCloneDiagram, TOOL_DEFINITION as CLONE_DIAGRAM_DEF } from './core/clone-diagram';
+import { handleCloneDiagram } from './core/clone-diagram';
 import { handleListDiagrams, TOOL_DEFINITION as LIST_DIAGRAMS_DEF } from './core/list-diagrams';
 import { handleSummarizeDiagram } from './core/summarize-diagram';
 import { handleImportXml, TOOL_DEFINITION as IMPORT_XML_DEF } from './core/import-xml';
@@ -140,10 +140,7 @@ import {
   handleAssignElementsToLane,
   TOOL_DEFINITION as ASSIGN_ELEMENTS_TO_LANE_DEF,
 } from './collaboration/assign-elements-to-lane';
-import {
-  handleWrapProcessInCollaboration,
-  TOOL_DEFINITION as WRAP_PROCESS_IN_COLLABORATION_DEF,
-} from './collaboration/wrap-process-in-collaboration';
+import { handleWrapProcessInCollaboration } from './collaboration/wrap-process-in-collaboration';
 import { handleSplitParticipantIntoLanes } from './collaboration/split-participant-into-lanes';
 import {
   handleCreateParticipant,
@@ -160,10 +157,7 @@ import {
   handleAnalyzeLanes,
   TOOL_DEFINITION as ANALYZE_LANES_DEF,
 } from './collaboration/analyze-lanes';
-import {
-  handleConvertCollaborationToLanes,
-  TOOL_DEFINITION as CONVERT_COLLABORATION_TO_LANES_DEF,
-} from './collaboration/convert-collaboration-to-lanes';
+import { handleConvertCollaborationToLanes } from './collaboration/convert-collaboration-to-lanes';
 import {
   handleRedistributeElementsAcrossLanes,
   TOOL_DEFINITION as REDISTRIBUTE_ELEMENTS_ACROSS_LANES_DEF,
@@ -217,14 +211,14 @@ const TOOL_REGISTRY: ToolRegistration[] = [
   },
   { definition: REPLACE_ELEMENT_DEF, handler: handleReplaceElement },
   { definition: LIST_PROCESS_VARIABLES_DEF, handler: handleListProcessVariables },
-  { definition: CLONE_DIAGRAM_DEF, handler: handleCloneDiagram },
+  // clone_bpmn_diagram removed: cloneFrom parameter on create_bpmn_diagram
   { definition: DIFF_DIAGRAMS_DEF, handler: handleDiffDiagrams },
   { definition: ADD_ELEMENT_CHAIN_DEF, handler: handleAddElementChain },
   { definition: SET_CONNECTION_WAYPOINTS_DEF, handler: handleSetConnectionWaypoints },
   { definition: ASSIGN_ELEMENTS_TO_LANE_DEF, handler: handleAssignElementsToLane },
-  { definition: WRAP_PROCESS_IN_COLLABORATION_DEF, handler: handleWrapProcessInCollaboration },
+  // wrap_bpmn_process_in_collaboration removed: wrapExisting on create_bpmn_participant
   { definition: HANDOFF_TO_LANE_DEF, handler: handleHandoffToLane },
-  { definition: CONVERT_COLLABORATION_TO_LANES_DEF, handler: handleConvertCollaborationToLanes },
+  // convert_bpmn_collaboration_to_lanes removed: mergeFrom on create_bpmn_lanes
   { definition: AUTOSIZE_POOLS_AND_LANES_DEF, handler: handleAutosizePoolsAndLanes },
 ];
 
