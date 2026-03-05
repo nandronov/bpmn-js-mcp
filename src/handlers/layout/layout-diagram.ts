@@ -119,10 +119,10 @@ async function handleDryRunLayout(args: LayoutDiagramArgs): Promise<ToolResult> 
       }
     }
 
-    // Run rebuild layout on the clone
-    rebuildLayout(tempDiagram);
-
+    // Run rebuild layout on the clone (pass gridSnap for forward-pass alignment)
     const pixelGridSnap = typeof args.gridSnap === 'number' ? args.gridSnap : undefined;
+    rebuildLayout(tempDiagram, { gridSnap: pixelGridSnap });
+
     if (pixelGridSnap && pixelGridSnap > 0) applyPixelGridSnap(tempDiagram, pixelGridSnap);
 
     const stats = computeDisplacementStats(originalPositions, tempRegistry);
@@ -394,13 +394,19 @@ export async function handleLayoutDiagram(
   const willAutosize = shouldAutosizePools(args, diagram);
 
   await progress?.(10, 100, 'Running rebuild layout…');
+  const pixelGridSnap = typeof args.gridSnap === 'number' ? args.gridSnap : undefined;
   const result = rebuildLayout(diagram, {
     pinnedElementIds: diagram.pinnedElements,
     skipPoolResize: willAutosize,
+    // Pass gridSnap into the rebuild engine so snapLeft() uses the configured
+    // grid during the forward pass (not only as a post-processing step).
+    gridSnap: pixelGridSnap,
   });
 
   await progress?.(60, 100, 'Post-processing layout…');
-  const pixelGridSnap = typeof args.gridSnap === 'number' ? args.gridSnap : undefined;
+  // applyPixelGridSnap is still applied after rebuild to snap Y coordinates
+  // (which are not aligned by snapLeft()) and to handle any residual drift
+  // from boundary-event and pool-resize operations.
   if (pixelGridSnap && pixelGridSnap > 0) applyPixelGridSnap(diagram, pixelGridSnap);
   deduplicateDiInModeler(diagram);
 

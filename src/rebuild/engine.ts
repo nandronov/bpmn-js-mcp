@@ -97,6 +97,14 @@ export interface RebuildOptions {
    * internal resize anyway — setting this flag avoids the redundant step.
    */
   skipPoolResize?: boolean;
+  /**
+   * Pixel grid size for the forward-pass X snapping inside `snapLeft()`.
+   * When set, element left edges are snapped to this grid size during
+   * position computation, not just as a post-processing step.
+   * Defaults to `POSITION_GRID` (10px) when omitted.
+   * Mirrors the `gridSnap` parameter on `layout_bpmn_diagram`.
+   */
+  gridSnap?: number;
 }
 
 /** Result returned by the rebuild layout engine. */
@@ -144,6 +152,7 @@ export function rebuildLayout(diagram: DiagramState, options?: RebuildOptions): 
   const branchSpacing = options?.branchSpacing ?? DEFAULT_BRANCH_SPACING;
   const pinnedElementIds = options?.pinnedElementIds;
   const skipPoolResize = options?.skipPoolResize ?? false;
+  const gridSnap = options?.gridSnap;
 
   const hierarchy = buildContainerHierarchy(registry);
   const rebuildOrder = getContainerRebuildOrder(hierarchy);
@@ -163,7 +172,8 @@ export function rebuildLayout(diagram: DiagramState, options?: RebuildOptions): 
       pinnedElementIds,
       rebuiltParticipants,
       skipPoolResize,
-      eventBus
+      eventBus,
+      gridSnap
     );
     totalRepositioned += counts.repositionedCount;
     totalRerouted += counts.reroutedCount;
@@ -202,7 +212,8 @@ function processContainerNode(
   pinnedElementIds: Set<string> | undefined,
   rebuiltParticipants: BpmnElement[],
   skipPoolResize: boolean,
-  eventBus: EventBus
+  eventBus: EventBus,
+  gridSnap?: number
 ): RebuildResult {
   const container = containerNode.element;
 
@@ -241,7 +252,8 @@ function processContainerNode(
     eventSubIds,
     pinnedElementIds,
     elementLaneYs,
-    eventBus
+    eventBus,
+    gridSnap
   );
 
   let repositionedCount = result.repositionedCount;
@@ -344,7 +356,8 @@ function rebuildContainer(
   additionalExcludeIds?: Set<string>,
   pinnedElementIds?: Set<string>,
   elementLaneYs?: Map<string, number>,
-  eventBus?: EventBus
+  eventBus?: EventBus,
+  gridSnap?: number
 ): RebuildResult {
   // Extract flow graph scoped to this container
   const graph = extractFlowGraph(registry, container);
@@ -376,7 +389,8 @@ function rebuildContainer(
     gap,
     branchSpacing,
     allExcludeIds,
-    elementLaneYs
+    elementLaneYs,
+    gridSnap
   );
 
   // Safety-net: spread any overlapping elements (e.g. open-fan parallel branches).

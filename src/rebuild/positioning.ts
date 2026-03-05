@@ -26,17 +26,25 @@ export const DEFAULT_ORIGIN = CONSTANTS_DEFAULT_ORIGIN;
 // ── Grid snapping ──────────────────────────────────────────────────────────
 
 /**
- * Snap the LEFT EDGE of an element to the nearest 10-pixel grid line.
+ * Snap the LEFT EDGE of an element to the nearest grid line.
  *
  * Computes `rightEdge + gap`, then rounds to the nearest multiple of
- * POSITION_GRID, then returns the element's centre X.
+ * `gridSize` (default: POSITION_GRID = 10), then returns the element's centre X.
  *
  * Snapping left edges (rather than centres) ensures that the visible
  * top-left corner of each element lands on a predictable grid, which
  * improves the `gridSnapAvg` metric significantly.
+ *
+ * Pass a custom `gridSize` via {@link RebuildOptions.gridSnap} to override the
+ * default 10px grid during the forward layout pass.
  */
-function snapLeft(rightEdge: number, gap: number, elementWidth: number): number {
-  const leftX = Math.round((rightEdge + gap) / POSITION_GRID) * POSITION_GRID;
+function snapLeft(
+  rightEdge: number,
+  gap: number,
+  elementWidth: number,
+  gridSize: number = POSITION_GRID
+): number {
+  const leftX = Math.round((rightEdge + gap) / gridSize) * gridSize;
   return leftX + elementWidth / 2;
 }
 
@@ -230,8 +238,10 @@ export function computePositions(
   gap: number,
   branchSpacing: number,
   excludeIds?: Set<string>,
-  elementLaneYs?: Map<string, number>
+  elementLaneYs?: Map<string, number>,
+  gridSnap?: number
 ): Map<string, { x: number; y: number }> {
+  const gridSize = gridSnap ?? POSITION_GRID;
   const positions = new Map<string, { x: number; y: number }>();
 
   // Pre-place start nodes at the origin column, stacked vertically.
@@ -242,7 +252,7 @@ export function computePositions(
     const node = graph.nodes.get(startId);
     if (!node) continue;
     const w = node.element.width ?? 36;
-    const snappedCenterX = snapLeft(origin.x - w / 2 - 0, 0, w); // snap left edge from origin
+    const snappedCenterX = snapLeft(origin.x - w / 2 - 0, 0, w, gridSize); // snap left edge from origin
     positions.set(startId, { x: snappedCenterX, y: startY });
     startY += branchSpacing;
   }
@@ -256,7 +266,7 @@ export function computePositions(
     if (!node) continue;
 
     if (mergeToPattern.has(elementId)) {
-      positionMerge(positions, mergeToPattern.get(elementId)!, node.element, gap, graph);
+      positionMerge(positions, mergeToPattern.get(elementId)!, node.element, gap, graph, gridSize);
     } else if (elementToBranch.has(elementId)) {
       const { pattern, branchIndex } = elementToBranch.get(elementId)!;
       positionBranchElement(
@@ -268,10 +278,19 @@ export function computePositions(
         gap,
         branchSpacing,
         graph,
-        elementLaneYs
+        elementLaneYs,
+        gridSize
       );
     } else {
-      positionAfterPredecessor(positions, node, node.element, gap, backEdgeIds, elementLaneYs);
+      positionAfterPredecessor(
+        positions,
+        node,
+        node.element,
+        gap,
+        backEdgeIds,
+        elementLaneYs,
+        gridSize
+      );
     }
   }
 
@@ -293,7 +312,8 @@ function positionAfterPredecessor(
   element: BpmnElement,
   gap: number,
   backEdgeIds: Set<string>,
-  elementLaneYs?: Map<string, number>
+  elementLaneYs?: Map<string, number>,
+  gridSize: number = POSITION_GRID
 ): void {
   // Collect positioned forward predecessors
   const predecessors: Array<{ element: BpmnElement; pos: { x: number; y: number } }> = [];
@@ -324,7 +344,7 @@ function positionAfterPredecessor(
   }
 
   positions.set(element.id, {
-    x: snapLeft(maxRight, gap, element.width),
+    x: snapLeft(maxRight, gap, element.width, gridSize),
     y: elementLaneYs?.get(element.id) ?? best.pos.y,
   });
 }
@@ -351,7 +371,8 @@ function positionBranchElement(
   gap: number,
   branchSpacing: number,
   graph: FlowGraph,
-  elementLaneYs?: Map<string, number>
+  elementLaneYs?: Map<string, number>,
+  gridSize: number = POSITION_GRID
 ): void {
   const splitPos = positions.get(pattern.splitId);
   if (!splitPos) {
@@ -379,10 +400,10 @@ function positionBranchElement(
   } else {
     rawOffset = (branchIndex - (numBranches - 1) / 2) * branchSpacing;
   }
-  // Snap to nearest multiple of 10 using absolute-value rounding so that
-  // positive and negative offsets snap symmetrically (e.g. ±65 → ±70).
-  // This aligns branch element top-left Y coordinates to the 10px grid.
-  const branchOffset = Math.sign(rawOffset) * Math.round(Math.abs(rawOffset) / 10) * 10;
+  // Snap to nearest multiple of gridSize using absolute-value rounding so that
+  // positive and negative offsets snap symmetrically (e.g. ±65 → ±70 with 10px).
+  // This aligns branch element top-left Y coordinates to the grid.
+  const branchOffset = Math.sign(rawOffset) * Math.round(Math.abs(rawOffset) / gridSize) * gridSize;
   const branchY = elementLaneYs?.get(elementId) ?? splitPos.y + branchOffset;
 
   // X based on position within the branch
@@ -403,7 +424,7 @@ function positionBranchElement(
   }
 
   positions.set(elementId, {
-    x: snapLeft(prevRight, gap, element.width),
+    x: snapLeft(prevRight, gap, element.width, gridSize),
     y: branchY,
   });
 }
@@ -419,7 +440,8 @@ function positionMerge(
   pattern: GatewayPattern,
   element: BpmnElement,
   gap: number,
-  graph: FlowGraph
+  graph: FlowGraph,
+  gridSize: number = POSITION_GRID
 ): void {
   const splitPos = positions.get(pattern.splitId);
   if (!splitPos) {
@@ -448,7 +470,7 @@ function positionMerge(
   // join position, the join would visually abut that branch endpoint.
   // Add one extra gap to ensure a clear visual separation.
   let extraGap = 0;
-  const initialJoinX = snapLeft(maxRight, gap, element.width);
+  const initialJoinX = snapLeft(maxRight, gap, element.width, gridSize);
   for (const branch of pattern.branches) {
     if (branch.length > 0) {
       const lastId = branch[branch.length - 1];
@@ -461,7 +483,7 @@ function positionMerge(
   }
 
   positions.set(element.id, {
-    x: extraGap === 0 ? initialJoinX : snapLeft(maxRight, gap + extraGap, element.width),
+    x: extraGap === 0 ? initialJoinX : snapLeft(maxRight, gap + extraGap, element.width, gridSize),
     y: splitPos.y,
   });
 }
