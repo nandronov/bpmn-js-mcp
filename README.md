@@ -23,6 +23,37 @@ MCP server that lets AI assistants create and manipulate BPMN 2.0 workflow diagr
 }
 ```
 
+### Persistence
+
+By default, all diagrams are held **in-memory only** and are lost when the MCP server process restarts. To survive restarts, pass `--persist-dir` with a directory path:
+
+```json
+{
+  "servers": {
+    "bpmn": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["git+https://github.com/datakurre/bpmn-js-mcp", "--persist-dir", "./diagrams"]
+    }
+  }
+}
+```
+
+With persistence enabled:
+
+- Each diagram is saved as `<diagramId>.bpmn` (plus a `<diagramId>.meta.json` sidecar) in the specified directory whenever it is mutated.
+- The directory is created automatically if it does not exist.
+- All `.bpmn` files found in the directory are reloaded into memory on startup, restoring diagrams across restarts.
+- Up to `BPMN_MCP_MAX_DIAGRAMS` diagrams (default: 100) are held in memory at once; when the limit is reached, the oldest diagram is evicted (FIFO). Set the environment variable to override.
+
+You can also combine `--persist-dir` with `--hint-level` to reduce response verbosity:
+
+```json
+"args": ["git+https://github.com/datakurre/bpmn-js-mcp", "--persist-dir", "./diagrams", "--hint-level", "minimal"]
+```
+
+`--hint-level` values: `full` (default — includes lint errors, layout hints, connectivity warnings), `minimal` (lint errors only), `none` (no implicit feedback).
+
 ## AI Agent Instructions
 
 > **When working with `.bpmn` files, always use the BPMN MCP tools instead of editing BPMN XML directly.** The MCP tools ensure valid BPMN 2.0 structure, proper diagram layout coordinates, and semantic correctness that hand-editing XML cannot guarantee.
