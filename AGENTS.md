@@ -1,5 +1,11 @@
 # AGENTS.md
 
+## Preceding projects
+
+https://github.com/dattmavis/BPMN-MCP (initial)
+https://github.com/datakurre/bpmn-js-mcp (fork with auto layout tools integrated)
+https://github.com/nandronov/bpmn-js-mcp (current fork for local use and version binding)
+
 ## Project Overview
 
 MCP (Model Context Protocol) server that lets AI assistants create and manipulate BPMN 2.0 workflow diagrams. Uses `bpmn-js` running headlessly via `jsdom` to produce valid BPMN XML and SVG output.

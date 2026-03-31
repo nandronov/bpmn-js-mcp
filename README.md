@@ -17,7 +17,7 @@ MCP server that lets AI assistants create and manipulate BPMN 2.0 workflow diagr
     "bpmn": {
       "type": "stdio",
       "command": "npx",
-      "args": ["git+https://github.com/datakurre/bpmn-js-mcp"]
+      "args": ["git+https://github.com/nandronov/bpmn-js-mcp"]
     }
   }
 }
@@ -33,7 +33,7 @@ By default, all diagrams are held **in-memory only** and are lost when the MCP s
     "bpmn": {
       "type": "stdio",
       "command": "npx",
-      "args": ["git+https://github.com/datakurre/bpmn-js-mcp", "--persist-dir", "./diagrams"]
+      "args": ["git+https://github.com/nandronov/bpmn-js-mcp", "--persist-dir", "./diagrams"]
     }
   }
 }
@@ -49,7 +49,7 @@ With persistence enabled:
 You can also combine `--persist-dir` with `--hint-level` to reduce response verbosity:
 
 ```json
-"args": ["git+https://github.com/datakurre/bpmn-js-mcp", "--persist-dir", "./diagrams", "--hint-level", "minimal"]
+"args": ["git+https://github.com/nandronov/bpmn-js-mcp", "--persist-dir", "./diagrams", "--hint-level", "minimal"]
 ```
 
 `--hint-level` values: `full` (default — includes lint errors, layout hints, connectivity warnings), `minimal` (lint errors only), `none` (no implicit feedback).
@@ -229,7 +229,7 @@ See [AGENTS.md](AGENTS.md) for architecture details and decision records.
 ### Getting Started
 
 ```bash
-git clone https://github.com/datakurre/bpmn-js-mcp
+git clone https://github.com/nandronov/bpmn-js-mcp
 cd bpmn-js-mcp
 npm install
 npm run build   # compile TypeScript → dist/ via esbuild
