@@ -7,6 +7,9 @@ MCP server that lets AI assistants create and manipulate BPMN 2.0 workflow diagr
 > [!WARNING]
 > This fork is primarily developed with the assistance of AI coding agents.
 
+> [!NOTE]
+> This fork is optimized for use with [Claude Code](https://claude.ai/claude-code) (the Anthropic CLI). Tool schemas are compatible with the Claude API — top-level `oneOf`/`allOf`/`anyOf` constructs that cause Claude API 400 errors have been removed, with equivalent constraints documented in tool and property descriptions.
+
 ## Setup
 
 ### `./vscode/mcp.json`
@@ -18,6 +21,32 @@ MCP server that lets AI assistants create and manipulate BPMN 2.0 workflow diagr
       "type": "stdio",
       "command": "npx",
       "args": ["git+https://github.com/nandronov/bpmn-js-mcp"]
+    }
+  }
+}
+```
+
+### `.claude/settings.json` (Claude Code Global) or `{project}/.mcp.json` (Project)
+
+```json
+{
+  "mcpServers": {
+    "bpmn": {
+      "command": "node",
+      "args": ["./node_modules/.bin/bpmn-js-mcp"]
+    }
+  }
+}
+```
+
+Or to run directly from a local clone after `npm run build`:
+
+```json
+{
+  "mcpServers": {
+    "bpmn": {
+      "command": "node",
+      "args": ["/absolute/path/to/bpmn-js-mcp/dist/index.js"]
     }
   }
 }
