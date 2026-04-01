@@ -9,11 +9,12 @@ export const TOOL_DEFINITION = {
   name: 'add_bpmn_element',
   description:
     'Add an element (task, gateway, event, etc.) to a BPMN diagram. ' +
-    'Supports boundary events via hostElementId and auto-positioning via afterElementId. ' +
-    'When afterElementId is used, downstream elements are automatically shifted right to prevent overlap. ' +
     'Generates descriptive element IDs when a name is provided (e.g. UserTask_EnterName, Gateway_HasSurname). ' +
-    '**⚠ Boundary events:** Use elementType=bpmn:BoundaryEvent with hostElementId. ' +
-    'Do NOT use bpmn:IntermediateCatchEvent for boundary events. ' +
+    '**Parameter constraints:** ' +
+    '(1) bpmn:BoundaryEvent requires hostElementId — afterElementId and flowId must not be set. ' +
+    '(2) flowId and afterElementId are mutually exclusive — use one or the other, never both. ' +
+    '(3) eventDefinitionType is only valid for event element types: StartEvent, EndEvent, IntermediateCatchEvent, IntermediateThrowEvent, BoundaryEvent. ' +
+    '**Boundary events:** Use elementType=bpmn:BoundaryEvent with hostElementId. Do NOT use bpmn:IntermediateCatchEvent for boundary events. ' +
     '**Subprocesses:** Default is expanded (350×200); set isExpanded=false for collapsed. ' +
     '**Cross-lane handoff:** Use fromElementId + toLaneId to place the new element in a target lane and ' +
     'auto-connect from a source element (replaces handoff_bpmn_to_lane). ' +
@@ -83,7 +84,8 @@ export const TOOL_DEFINITION = {
       afterElementId: {
         type: 'string',
         description:
-          'Place the new element to the right of this element (auto-positions x/y). Overrides explicit x/y.',
+          'Place the new element to the right of this element (auto-positions x/y). Overrides explicit x/y. ' +
+          'Mutually exclusive with flowId. Not valid for bpmn:BoundaryEvent (use hostElementId instead).',
       },
       flowId: {
         type: 'string',
@@ -143,6 +145,7 @@ export const TOOL_DEFINITION = {
         description:
           'Shorthand: set an event definition on the new element in one call. ' +
           'Combines add_bpmn_element + set_bpmn_event_definition. ' +
+          'Only valid for event element types: StartEvent, EndEvent, IntermediateCatchEvent, IntermediateThrowEvent, BoundaryEvent. ' +
           'Especially useful for boundary events.',
       },
       eventDefinitionProperties: {
@@ -236,45 +239,6 @@ export const TOOL_DEFINITION = {
       },
     },
     required: ['diagramId', 'elementType'],
-    allOf: [
-      {
-        if: {
-          properties: { elementType: { const: 'bpmn:BoundaryEvent' } },
-          required: ['elementType'],
-        },
-        then: {
-          required: ['hostElementId'],
-          properties: {
-            afterElementId: { not: {} },
-            flowId: { not: {} },
-          },
-        },
-      },
-      {
-        not: {
-          description: 'flowId and afterElementId are mutually exclusive',
-          required: ['flowId', 'afterElementId'],
-        },
-      },
-      {
-        if: {
-          required: ['eventDefinitionType'],
-        },
-        then: {
-          properties: {
-            elementType: {
-              enum: [
-                'bpmn:StartEvent',
-                'bpmn:EndEvent',
-                'bpmn:IntermediateCatchEvent',
-                'bpmn:IntermediateThrowEvent',
-                'bpmn:BoundaryEvent',
-              ],
-            },
-          },
-        },
-      },
-    ],
     examples: [
       {
         title: 'Attach boundary timer event to a task',
